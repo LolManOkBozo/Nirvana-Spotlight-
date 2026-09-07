@@ -1,5 +1,5 @@
 """
-Configuration constants for Nirvana Spotlight (Professional Edition)
+Configuration constants for Nirvana Spotlight (Professional Optimized)
 """
 import os
 import ctypes  # For Windows HC detection
@@ -37,6 +37,20 @@ SHORTCUT_DIRS = [
 # Low-end performance flags (set to True on weak hardware)
 LOW_END_MODE = True  # Set to False on powerful PCs
 ANIMATION_DURATION = 0 if LOW_END_MODE else 150  # ms for animations (0 = instant on low-end)
+
+# WinRT availability (checked at runtime)
+try:
+    from winsdk.windows.storage.search import *
+    from winsdk.windows.storage import *
+    WINRT_AVAILABLE = True
+except ImportError:
+    WINRT_AVAILABLE = False
+
+# Cache settings
+CACHE_EXPIRY_SECONDS = 300  # 5 minutes
+CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NirvanaSpotlight"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+USAGE_FILE = CACHE_DIR / "usage_counts.json"
 
 # Debug mode (auto-enabled when debugger attached)
 import sys

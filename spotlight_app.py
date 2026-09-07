@@ -1,5 +1,5 @@
 """
-Main Spotlight application logic and UI (Professional Edition)
+Main Spotlight application logic and UI (Professional Optimized)
 """
 import os
 import queue
@@ -19,7 +19,7 @@ except ImportError:
 
 try:
     import pystray
-    from PIL import Image, ImageDraw  # FIXED: Correct PIL import syntax
+    from PIL import Image, ImageDraw
 except ImportError:
     pystray = None
 
@@ -104,7 +104,7 @@ class SpotlightApp:
         frame.pack(fill="both", expand=True)
 
         title = ctk.CTkLabel(frame, text="Winspot", font=("Segoe UI", 34, "bold"), text_color=FG)
-        title.pack(expand=True, pady=(24, 0))
+        title.pack(expand=True, pady=(24, 0))  # FIXED: Was 'payout' typo
 
         subtitle = ctk.CTkLabel(frame, text="Initializing professional search interface...", font=("Segoe UI", 13), text_color=FG_DIM)
         subtitle.pack(expand=True, pady=(0, 24))
