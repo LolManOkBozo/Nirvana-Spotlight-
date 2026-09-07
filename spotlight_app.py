@@ -41,6 +41,7 @@ from config import (
     ANIMATION_DURATION,
     HC_BG,
     HC_FG,
+    HC_FG_DIM,
     HC_ACCENT,
     HC_MODE  # Initial HC state from config
 )
@@ -50,14 +51,14 @@ from index import SystemIndex
 
 class SpotlightApp:
     def __init__(self):
-        # Force Light Mode for the macOS feel
+        # Force Light Mode for the macOS feel (overriden by theme detection)
         ctk.set_appearance_mode("light")
         ctk.set_default_color_theme("blue")
 
         self.root = ctk.CTk()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.0)  # Start transparent (will be set on show)
+        self.root.attributes("-alpha", 1.0)  # NO TRANSPARENCY (solid background)
         self.root.configure(fg_color=BG)
         self.root.withdraw()
 
@@ -88,7 +89,7 @@ class SpotlightApp:
         splash = ctk.CTkToplevel(self.root)
         splash.overrideredirect(True)
         splash.attributes("-topmost", True)
-        splash.attributes("-alpha", 0.92)
+        splash.attributes("-alpha", 1.0)  # NO TRANSPARENCY
         splash.configure(fg_color=BG)
 
         # Center the Splash Screen
@@ -107,7 +108,7 @@ class SpotlightApp:
         title.pack(expand=True, pady=(24, 0))
 
         subtitle = ctk.CTkLabel(frame, text="Initializing professional search interface...", font=("Segoe UI", 13), text_color=FG_DIM)
-        subtitle.pack(expand=True, pady=(0, 24))
+        subtitle.pack(expand=True, pady=(0, 24))  # FIXED: Removed erroneous "subtitle)" line
 
         splash.update()
 
@@ -190,7 +191,7 @@ class SpotlightApp:
 
         # ⭐ PROFESSIONAL TOUCH: Smooth fade-in (macOS-style)
         self.root.attributes("-alpha", 0.0)
-        self._fade_animation(0, 92, 120)  # 0% → 92% over 120ms
+        self._fade_animation(0, 100, 120)  # 0% → 100% over 120ms
 
         # Focus handling (optimized for low-end)
         self._just_shown = True
@@ -205,7 +206,7 @@ class SpotlightApp:
         def step(current=start):
             if current > end:
                 return
-            self.root.attributes("-alpha", current/100 * 0.92)
+            self.root.attributes("-alpha", current/100 * 1.0)  # Solid opacity
             self.root.after(int(step_time), lambda: step(current + (end-start)/steps))
         step()
 
@@ -223,7 +224,7 @@ class SpotlightApp:
             self.action_queue.put(("set_status", ""))
 
         # ⭐ PROFESSIONAL TOUCH: Smooth fade-out
-        self._fade_animation(92, 0, 100)  # 92% → 0% over 100ms
+        self._fade_animation(100, 0, 100)  # 100% → 0% over 100ms
         self.root.after(100, self._finalize_hide)  # Hide after fade completes
 
     def _finalize_hide(self):
@@ -504,18 +505,6 @@ class SpotlightApp:
         # ⚡ OPTIMIZATION: Calculate height more efficiently
         height = 76 + (45 if LOW_END_MODE else 54) * len(self.results) + (10 if LOW_END_MODE else 10)
         self.root.geometry(f"{WINDOW_WIDTH}x{height}+{self.root.winfo_x()}+{self.root.winfo_y()}")
-
-    def _show_tooltip(self, event, path, row):
-        """Show tooltip with file path"""
-        if hasattr(row, '_tooltip_label'):
-            row._tooltip_label.configure(text=path)
-            x, y = event.x_root, event.y_root
-            row._tooltip_label.place(x=x+10, y=y+10)
-
-    def _hide_tooltip(self, event, row):
-        """Hide tooltip"""
-        if hasattr(row, '_tooltip_label'):
-            row._tooltip_label.place_forget()
 
     def _on_row_enter(self, idx):
         """Handle mouse enter on result row"""

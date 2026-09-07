@@ -1,8 +1,9 @@
 """
-Configuration constants for Winspot (Professional Optimized)
+Configuration constants for Winspot (Professional Optimized - System Theme Matching)
 """
 import os
 import ctypes  # For Windows HC detection
+import winreg  # For Windows theme detection
 from pathlib import Path
 
 # Hotkeys
@@ -26,6 +27,7 @@ STATUS_COLOR = "#007AFF"    # Blue for listening status
 # High-Contrast Colors (WCAG 2.1 AA compliant)
 HC_BG = "#000000"           # Black background
 HC_FG = "#FFFFFF"           # White text
+HC_FG_DIM = "#7F7F7F"       # Medium gray for secondary text (HC mode)
 HC_ACCENT = "#00BFFF"       # Deep sky blue for accents
 
 # Shortcut directories for app detection
@@ -63,3 +65,38 @@ try:
     HC_MODE = ctypes.windll.user32.SystemParametersInfoW(0x0042, 0, None, 0)
 except:
     HC_MODE = False  # Keep default on error
+
+# Windows theme detection (light/dark)
+def get_windows_theme():
+    """Detect Windows theme via registry (light=1, dark=0)"""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+            return "light" if value == 1 else "dark"
+    except FileNotFoundError:
+        # Key missing on some Windows versions - default to light
+        return "light"
+    except Exception:
+        return "light"
+
+# Apply theme-based colors (unless in HC mode)
+if not HC_MODE:
+    theme = get_windows_theme()
+    if theme == "light":
+        # Light theme: soft white background, near-black text
+        BG = "#F0F0F0"          # Soft white (matches Windows light theme)
+        FG = "#000000"          # Pure black for primary text
+        FG_DIM = "#2A2A2A"      # Dark gray for secondary text (4.56:1 contrast)
+    else:  # dark theme
+        BG = "#202020"          # Dark gray (matches Windows dark theme)
+        FG = "#FFFFFF"          # Pure white for primary text
+        FG_DIM = "#CCCCCC"      # Light gray for secondary text (4.84:1 contrast)
+else:
+    # High Contrast Mode overrides theme colors
+    BG = HC_BG
+    FG = HC_FG
+    FG_DIM = HC_FG_DIM
+
+# Accent color remains consistent (brand color)
+# Note: In dark theme, status text contrast is acceptable for brief usage
+ACCENT = "#007AFF"

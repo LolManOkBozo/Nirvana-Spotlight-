@@ -1,5 +1,5 @@
 """
-Utility functions for Nirvana Spotlight
+Utility functions for Winspot
 """
 import ast
 import operator
