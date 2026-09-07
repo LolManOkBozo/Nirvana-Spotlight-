@@ -1,6 +1,7 @@
 """
 Configuration constants for Nirvana Spotlight (Professional Optimized)
 """
+VERSION = "1.0.0"  # Semantic versioning (MAJOR.MINOR.PATCH)
 import os
 import ctypes  # For Windows HC detection
 from pathlib import Path
