@@ -1,5 +1,5 @@
 """
-Main Spotlight application logic and UI (Professional Optimized)
+Main Spotlight application logic and UI (Winspot Professional Optimized)
 """
 import os
 import queue
@@ -104,7 +104,7 @@ class SpotlightApp:
         frame.pack(fill="both", expand=True)
 
         title = ctk.CTkLabel(frame, text="Winspot", font=("Segoe UI", 34, "bold"), text_color=FG)
-        title.pack(expand=True, pady=(24, 0))  # FIXED: Was 'payout' typo
+        title.pack(expand=True, pady=(24, 0))
 
         subtitle = ctk.CTkLabel(frame, text="Initializing professional search interface...", font=("Segoe UI", 13), text_color=FG_DIM)
         subtitle.pack(expand=True, pady=(0, 24))
@@ -132,7 +132,7 @@ class SpotlightApp:
         self.entry = ctk.CTkEntry(
             header_frame,
             textvariable=self.entry_var,
-            placeholder_text="Spotlight Search (Alt+K for voice search)",
+            placeholder_text="Spotlight Search (Alt+K for voice)",
             font=("Segoe UI", 20 if LOW_END_MODE else 22),  # ⚡ OPTIMIZATION: Smaller font
             height=48 if LOW_END_MODE else 56,               # ⚡ OPTIMIZATION: Shorter height
             corner_radius=6 if LOW_END_MODE else 12,         # ⚡ OPTIMIZATION: Less rounding
@@ -270,6 +270,31 @@ class SpotlightApp:
         # Get current text
         current_text = self.entry_var.get()
 
+        # Check for explicit web search prefix (?)
+        if current_text.startswith("?"):
+            q = current_text[1:].strip()
+            if q:
+                # Explicit web search: show ONLY web search results
+                self._search_timer = None
+                start_time = time.time()
+                self.clear_results()
+                self.results = [(
+                    f'Search the web for "{q}"',
+                    "Opens your browser",
+                    lambda: webbrowser.open(f"https://www.google.com/search?q={q}")
+                )]
+                self._render_results()
+
+                # Debug timing
+                if self._debug_mode:
+                    elapsed = (time.time() - start_time) * 1000
+                    self._last_search_time = elapsed
+                    print(f"[Spotlight] Explicit web search: '{q}' → 1 result in {elapsed:.1f}ms")
+            else:
+                # Just "?" - clear results
+                self.clear_results()
+            return
+
         # ⚡ OPTIMIZATION: Only search if meaningful change
         if len(current_text) >= 2 or current_text == "":
             self._pending_search = current_text
@@ -284,7 +309,7 @@ class SpotlightApp:
         self._search_timer = None
         start_time = time.time()
         text = self._pending_search
-        self.clear_results()  # <-- RESTORED METHOD
+        self.clear_results()
 
         if not text.strip():
             if self._debug_mode:
@@ -295,60 +320,54 @@ class SpotlightApp:
 
         entries = []
 
-        if text.startswith("?"):
-            q = text[1:].strip()
-            if q:
-                entries.append((f'Search the web for "{q}"', "Opens your browser", lambda: webbrowser.open(f"https://www.google.com/search?q={q}")))
-        elif looks_like_math(text):
+        # Check for math result
+        if looks_like_math(text):
             try:
                 result = safe_eval(text)
                 entries.append((f"= {result}", "Math result • Press Enter to copy", lambda: self.copy(str(result))))
             except Exception:
                 pass
 
-        if not entries:
-            # PRIORITY 1: Exact app matches (highest intent)
-            exact_apps = [(name, path) for name, path in self.index.search_apps(text)
-                          if name.lower() == text.lower()]
-            for name, path in exact_apps:
-                entries.append((name, f"Application • {path}", lambda p=path: os.startfile(p)))
+        # Calculate how many local results we can show (leaving room for web search)
+        max_local_results = MAX_RESULTS - 1  # Reserve one slot for web search
+        if max_local_results < 0:
+            max_local_results = 0
 
-            # PRIORITY 2: Fuzzy app matches
-            fuzzy_apps = [(name, path) for name, path in self.index.search_apps(text)
-                          if name.lower() != text.lower()]
-            remaining = MAX_RESULTS - len(entries)
-            for name, path in fuzzy_apps[:max(0, remaining)]:
-                entries.append((name, f"Application • {path}", lambda p=path: os.startfile(p)))
+        # Get apps results (up to max_local_results)
+        apps_results = []
+        for name, path in self.index.search_apps(text):
+            apps_results.append((name, f"Application • {path}", lambda p=path: os.startfile(p)))
+            if len(apps_results) >= max_local_results:
+                break
 
-            # PRIORITY 3: Files/folders (only if apps insufficient)
-            remaining = MAX_RESULTS - len(entries)
-            if remaining > 0:
-                file_results = self.index.search_windows_files(text, limit=remaining)
-                for name, path, is_dir in file_results:
-                    tag = "📁 Folder" if is_dir else "📄 Document"
-                    entries.append((name, f"{tag} • {path}", lambda p=path: os.startfile(p)))
+        # Get files/folders results (up to remaining space)
+        remaining = max_local_results - len(apps_results)
+        files_results = []
+        if remaining > 0:
+            file_results = self.index.search_windows_files(text, limit=remaining)
+            for name, path, is_dir in file_results:
+                tag = "📁 Folder" if is_dir else "📄 Document"
+                files_results.append((name, f"{tag} • {path}", lambda p=path: os.startfile(p)))
 
-        if not entries and text.strip():
-            q = text.strip()
-            entries.append((f'Search the web for "{q}"', "No local matches — opens browser", lambda: webbrowser.open(f"https://www.google.com/search?q={q}")))
+        # Combine: math results first, then local results, then web search
+        all_results = entries + apps_results + files_results
 
-        self.results = entries[:MAX_RESULTS]
-        self._render_results_throttled()  # ⚡ OPTIMIZATION: Throttled rendering
+        # Always add web search option if query not empty
+        if text.strip():
+            all_results.append((
+                f'Search the web for "{text}"',
+                "Opens your browser",
+                lambda: webbrowser.open(f"https://www.google.com/search?q={text}")
+            ))
+
+        self.results = all_results
+        self._render_results()
 
         # Debug timing
         if self._debug_mode:
             elapsed = (time.time() - start_time) * 1000
             self._last_search_time = elapsed
             print(f"[Spotlight] Search: '{text}' → {len(self.results)} results in {elapsed:.1f}ms")
-
-    def _render_results_throttled(self):
-        """Render results with frame rate limiting (Low-End Optimization)"""
-        # ⚡ OPTIMIZATION: Skip if we're already rendering or too soon since last render
-        if hasattr(self, '_last_render_time') and (time.time() - self._last_render_time) < 0.1:  # 10fps max
-            return
-
-        self._last_render_time = time.time()
-        self._render_results()
 
     def _render_results(self):
         """Render search results in the UI (Professional with enhancements)"""
@@ -362,7 +381,6 @@ class SpotlightApp:
 
         # Create/update rows
         for i in range(current_count):
-            # Safely unpack only 3 values (label, sub, action)
             label, sub, _action = self.results[i]
 
             # Extract path from subtext for apps/files results (format: "Label • path")
@@ -459,14 +477,15 @@ class SpotlightApp:
                     )
                     row._tooltip_label.place_forget()  # Start hidden
 
-                # Bind hover events
-                def show_tooltip(event, p=path):
-                    row._tooltip_label.configure(text=p)
-                    x, y = event.x_root, event.y_root
-                    row._tooltip_label.place(x=x+10, y=y+10)
+                # Bind hover events - FIXED: Proper closure capture
+                def make_show_tooltip(p):
+                    return lambda event: self._show_tooltip(event, p, row)
 
-                def hide_tooltip(event):
-                    row._tooltip_label.place_forget()
+                def make_hide_tooltip():
+                    return lambda event: self._hide_tooltip(event, row)
+
+                show_tooltip = make_show_tooltip(path)
+                hide_tooltip = make_hide_tooltip()
 
                 for widget in (row, row._title_label, row._subtitle_label):
                     widget.bind("<Enter>", show_tooltip)
@@ -485,6 +504,18 @@ class SpotlightApp:
         # ⚡ OPTIMIZATION: Calculate height more efficiently
         height = 76 + (45 if LOW_END_MODE else 54) * len(self.results) + (10 if LOW_END_MODE else 10)
         self.root.geometry(f"{WINDOW_WIDTH}x{height}+{self.root.winfo_x()}+{self.root.winfo_y()}")
+
+    def _show_tooltip(self, event, path, row):
+        """Show tooltip with file path"""
+        if hasattr(row, '_tooltip_label'):
+            row._tooltip_label.configure(text=path)
+            x, y = event.x_root, event.y_root
+            row._tooltip_label.place(x=x+10, y=y+10)
+
+    def _hide_tooltip(self, event, row):
+        """Hide tooltip"""
+        if hasattr(row, '_tooltip_label'):
+            row._tooltip_label.place_forget()
 
     def _on_row_enter(self, idx):
         """Handle mouse enter on result row"""

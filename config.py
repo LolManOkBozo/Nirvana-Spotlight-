@@ -1,7 +1,6 @@
 """
-Configuration constants for Nirvana Spotlight (Professional Optimized)
+Configuration constants for Winspot (Professional Optimized)
 """
-VERSION = "1.0.0"  # Semantic versioning (MAJOR.MINOR.PATCH)
 import os
 import ctypes  # For Windows HC detection
 from pathlib import Path
@@ -49,7 +48,7 @@ except ImportError:
 
 # Cache settings
 CACHE_EXPIRY_SECONDS = 300  # 5 minutes
-CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "NirvanaSpotlight"
+CACHE_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Winspot"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 USAGE_FILE = CACHE_DIR / "usage_counts.json"
 
