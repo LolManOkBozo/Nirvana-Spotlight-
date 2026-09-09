@@ -3,8 +3,6 @@ Main Spotlight application logic and UI (Winspot Professional Optimized)
 """
 import os
 import queue
-import re
-import sys
 import threading
 import time
 import webbrowser
@@ -447,23 +445,23 @@ class SpotlightApp:
             elif "📄 Document" in sub:
                 ext = Path(path).suffix.lower() if path else ""
                 if ext in [".pdf", ".doc", ".docx"]:
-                    icon = "📄 "
+                    icon = "📄 "  # Document
                 elif ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff"]:
-                    icon = "🖼️ "
+                    icon = "🖼️ "  # Image
                 elif ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
-                    icon = "▶️ "
+                    icon = "▶️ "  # Video
                 elif ext in [".zip", ".rar", ".7z", ".tar", ".gz"]:
-                    icon = "📦 "
+                    icon = "📦 "  # Archive
                 elif ext in [".exe", ".msi", ".bat", ".cmd"]:
-                    icon = "⚙️ "
+                    icon = "⚙️ "  # Executable
                 else:
-                    icon = "📄 "
+                    icon = "📄 "  # Generic document
             elif "Application" in sub:
-                icon = "▶️ "
+                icon = "▶️ "  # Application
             elif "Math result" in sub:
-                icon = "🧮 "
+                icon = "🧮 "  # Calculator
             elif "Search the web" in sub:
-                icon = "🔍 "
+                icon = "🔍 "  # Web search
 
             # Clean subtitle for display (remove icon prefixes)
             display_sub = sub.replace("📁 Folder • ", "").replace("📄 Document • ", "")

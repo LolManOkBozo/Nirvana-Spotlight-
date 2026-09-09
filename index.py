@@ -2,7 +2,6 @@
 System index for apps, files, and folders search (Optimized with WinRT, Cache & Usage Tracking)
 """
 import os
-import queue
 import re
 import sys
 import threading
@@ -11,7 +10,6 @@ import webbrowser
 import sqlite3
 import json
 from pathlib import Path
-from functools import lru_cache
 from collections import defaultdict
 
 import win32com.client
