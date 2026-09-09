@@ -372,150 +372,207 @@ class SpotlightApp:
 
     def _render_results(self):
         """Render search results in the UI (Professional with enhancements)"""
-        # ⚡ OPTIMIZATION: Reuse widgets when possible (reduce creation/destruction)
-        current_count = len(self.results)
-
-        # Destroy excess rows
-        while len(self.result_rows) > current_count:
-            row = self.result_rows.pop()
+        # Destroy all existing result rows
+        for row in self.result_rows:
             row.destroy()
+        self.result_rows = []
 
-        # Create/update rows
-        for i in range(current_count):
-            label, sub, _action = self.results[i]
+        # If no results, adjust window height and return
+        if not self.results:
+            self.root.geometry(f"{WINDOW_WIDTH}x76+{self.root.winfo_x()}+{self.root.winfo_y()}")
+            return
 
+        # Create new rows for each result
+        for i, (label, sub, action) in enumerate(self.results):
             # Extract path from subtext for apps/files results (format: "Label • path")
             path = ""
             if " • " in sub:
                 path = sub.split(" • ", 1)[1]  # Get everything after first " • "
 
-            if i < len(self.result_rows):
-                # Update existing row
-                row = self.result_rows[i]
-                # Update colors based on selection and HC mode
-                is_selected = (i == self.selected)
-                if self._high_contrast:
-                    fg_color = HC_FG if is_selected else HC_BG
-                    bg_color = HC_ACCENT if is_selected else HC_BG
+            # Create the row frame
+            row = ctk.CTkFrame(
+                self.results_frame,
+                corner_radius=6 if LOW_END_MODE else 10,
+                fg_color="transparent",  # Will be set below based on selection and HC mode
+                height=44 if LOW_END_MODE else 52,
+                border_width=0
+            )
+            row.pack(fill="x", pady=1 if LOW_END_MODE else 2, padx=1 if LOW_END_MODE else 2)
+            row.pack_propagate(False)
+
+            # Store index in row for hover/selection state tracking
+            row._index = i
+
+            # Determine colors based on selection and HC mode
+            if self._high_contrast:
+                if i == self.selected:
+                    bg_color = HC_ACCENT
+                    text_color = HC_BG
                 else:
-                    fg_color = FG if is_selected else BG_ITEM_HOVER if is_selected else BG
-                    bg_color = BG_ITEM_HOVER if is_selected else "transparent"
-                row.configure(fg_color=bg_color)
+                    bg_color = "transparent"
+                    text_color = HC_FG
             else:
-                # Create new row (only when needed)
-                row = ctk.CTkFrame(
-                    self.results_frame,
-                    corner_radius=6 if LOW_END_MODE else 10,  # ⚡ OPTIMIZATION: Less rounding
-                    fg_color="transparent",  # Will be set below
-                    height=44 if LOW_END_MODE else 52,         # ⚡ OPTIMIZATION: Shorter rows
-                    border_width=0
-                )
-                row.pack(fill="x", pady=1 if LOW_END_MODE else 2, padx=1 if LOW_END_MODE else 2)
-                row.pack_propagate(False)
-                self.result_rows.append(row)
+                if i == self.selected:
+                    bg_color = ACCENT
+                    text_color = FG
+                else:
+                    bg_color = "transparent"
+                    text_color = FG
 
-            # Update labels efficiently
-            # ⚡ OPTIMIZATION: Reuse label widgets if possible
-            if not hasattr(row, '_title_label'):
-                row._title_label = ctk.CTkLabel(
-                    row,
-                    font=("Segoe UI", 13 if LOW_END_MODE else 14, "bold"),
-                    text_color=FG,
-                    anchor="w"
-                )
-                row._title_label.pack(side="top", fill="x", padx=10 if LOW_END_MODE else 14, pady=(8 if LOW_END_MODE else 10, 0))
+            # Set row background color
+            row.configure(fg_color=bg_color)
 
-            if not hasattr(row, '_subtitle_label'):
-                row._subtitle_label = ctk.CTkLabel(
-                    row,
-                    font=("Segoe UI", 11 if LOW_END_MODE else 12),
-                    text_color=FG_DIM,
-                    anchor="w"
-                )
-                row._subtitle_label.pack(side="top", fill="x", padx=10 if LOW_END_MODE else 14)
+            # Title label
+            title_label = ctk.CTkLabel(
+                row,
+                font=("Segoe UI", 13 if LOW_END_MODE else 14, "bold"),
+                text_color=text_color,
+                anchor="w"
+            )
+            title_label.pack(side="top", fill="x", padx=10 if LOW_END_MODE else 14, pady=(8 if LOW_END_MODE else 10, 0))
+
+            # Subtitle label
+            subtitle_label = ctk.CTkLabel(
+                row,
+                font=("Segoe UI", 11 if LOW_END_MODE else 12),
+                text_color=text_color,
+                anchor="w"
+            )
+            subtitle_label.pack(side="top", fill="x", padx=10 if LOW_END_MODE else 14)
 
             # Set text with semantic icons
             icon = ""
             if "📁 Folder" in sub:
                 icon = "📁 "
             elif "📄 Document" in sub:
-                # ⭐ PROFESSIONAL TOUCH: Distinguish document types by extension
                 ext = Path(path).suffix.lower() if path else ""
                 if ext in [".pdf", ".doc", ".docx"]:
-                    icon = "📄 "  # Document
+                    icon = "📄 "
                 elif ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff"]:
-                    icon = "🖼️ "  # Image
+                    icon = "🖼️ "
                 elif ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
-                    icon = "▶️ "  # Video
+                    icon = "▶️ "
                 elif ext in [".zip", ".rar", ".7z", ".tar", ".gz"]:
-                    icon = "📦 "  # Archive
+                    icon = "📦 "
                 elif ext in [".exe", ".msi", ".bat", ".cmd"]:
-                    icon = "⚙️ "  # Executable
+                    icon = "⚙️ "
                 else:
-                    icon = "📄 "  # Generic document
+                    icon = "📄 "
             elif "Application" in sub:
-                icon = "▶️ "  # Application
+                icon = "▶️ "
             elif "Math result" in sub:
-                icon = "🧮 "  # Calculator
+                icon = "🧮 "
             elif "Search the web" in sub:
-                icon = "🔍 "  # Web search
+                icon = "🔍 "
 
-            # Set label text
-            row._title_label.configure(text=f"{icon}{label}")
-            row._subtitle_label.configure(text=sub.replace("📁 Folder • ", "").replace("📄 Document • ", ""))
+            # Clean subtitle for display (remove icon prefixes)
+            display_sub = sub.replace("📁 Folder • ", "").replace("📄 Document • ", "")
+            title_label.configure(text=f"{icon}{label}")
+            subtitle_label.configure(text=display_sub)
 
-            # ⭐ PROFESSIONAL TOUCH: Hover preview for file paths (files/folders only)
+            # Tooltip for file/folder rows
             if "📁 Folder" in sub or "📄 Document" in sub and path:
-                # Create invisible label for tooltip (only on hover)
-                if not hasattr(row, '_tooltip_label'):
-                    row._tooltip_label = ctk.CTkLabel(
-                        row,
-                        text="",
-                        font=("Segoe UI", 9),
-                        text_color="#FFFFFF",
-                        fg_color="#000000",
-                        corner_radius=3
-                    )
-                    row._tooltip_label.place_forget()  # Start hidden
+                # Create tooltip label (hidden by default)
+                tooltip_label = ctk.CTkLabel(
+                    row,
+                    text="",
+                    font=("Segoe UI", 9),
+                    text_color="#FFFFFF",
+                    fg_color="#000000",
+                    corner_radius=3
+                )
+                tooltip_label.place_forget()  # Start hidden
 
-                # Bind hover events - FIXED: Proper closure capture
-                def make_show_tooltip(p):
-                    return lambda event: self._show_tooltip(event, p, row)
+                # Bind hover events to show/hide tooltip
+                def make_show_tooltip(p, lbl):
+                    return lambda event: self._show_tooltip(event, p, lbl)
 
-                def make_hide_tooltip():
-                    return lambda event: self._hide_tooltip(event, row)
+                def make_hide_tooltip(lbl):
+                    return lambda event: self._hide_tooltip(event, lbl)
 
-                show_tooltip = make_show_tooltip(path)
-                hide_tooltip = make_hide_tooltip()
+                show_tooltip = make_show_tooltip(path, tooltip_label)
+                hide_tooltip = make_hide_tooltip(tooltip_label)
 
-                for widget in (row, row._title_label, row._subtitle_label):
+                for widget in (row, title_label, subtitle_label):
                     widget.bind("<Enter>", show_tooltip)
                     widget.bind("<Leave>", hide_tooltip)
 
-            # ⚡ OPTIMIZATION: Bind events only once (for non-tooltip widgets)
-            if not hasattr(row, '_events_bound'):
-                for widget in (row, row._title_label, row._subtitle_label):
-                    # Skip tooltip binding here (done above)
-                    if widget != getattr(row, '_tooltip_label', None):
-                        widget.bind("<Button-1>", lambda e, idx=i: self.launch(idx))
-                        widget.bind("<Enter>", lambda e, idx=i: self._on_row_enter(idx))
-                        widget.bind("<Leave>", lambda e, idx=i: self._on_row_leave(idx))
-                row._events_bound = True
+            # Click event: launch the action
+            def make_click_handler(act):
+                return lambda event: self._launch_action(act)
 
-        # ⚡ OPTIMIZATION: Calculate height more efficiently
+            click_handler = make_click_handler(action)
+            row.bind("<Button-1>", click_handler)
+            title_label.bind("<Button-1>", click_handler)
+            subtitle_label.bind("<Button-1>", click_handler)
+
+            # Hover events: change background color if not selected
+            def make_enter_handler(r):
+                return lambda event: self._on_row_enter(event, r)
+
+            def make_leave_handler(r):
+                return lambda event: self._on_row_leave(event, r)
+
+            enter_handler = make_enter_handler(row)
+            leave_handler = make_leave_handler(row)
+            row.bind("<Enter>", enter_handler)
+            row.bind("<Leave>", leave_handler)
+            title_label.bind("<Enter>", enter_handler)
+            title_label.bind("<Leave>", leave_handler)
+            subtitle_label.bind("<Enter>", enter_handler)
+            subtitle_label.bind("<Leave>", leave_handler)
+
+            # Keep track of the row
+            self.result_rows.append(row)
+
+        # Adjust window height
         height = 76 + (45 if LOW_END_MODE else 54) * len(self.results) + (10 if LOW_END_MODE else 10)
         self.root.geometry(f"{WINDOW_WIDTH}x{height}+{self.root.winfo_x()}+{self.root.winfo_y()}")
 
-    def _on_row_enter(self, idx):
-        """Handle mouse enter on result row"""
-        if idx < len(self.result_rows):
-            self.result_rows[idx].configure(fg_color=BG_ITEM_HOVER)
+    def _launch_action(self, action):
+        """Safely execute an action (used for click handlers)"""
+        try:
+            action()
+        except Exception:
+            pass
 
-    def _on_row_leave(self, idx):
+    def _show_tooltip(self, event, path, tooltip_label):
+        """Show file path tooltip near cursor"""
+        try:
+            # Position tooltip 10px below and right of cursor
+            x = self.root.winfo_pointerx() + 10
+            y = self.root.winfo_pointery() + 10
+            tooltip_label.configure(text=path)
+            tooltip_label.place(x=x, y=y)
+        except Exception:
+            pass  # Fail silently if tooltip positioning fails
+
+    def _hide_tooltip(self, event, tooltip_label):
+        """Hide file path tooltip"""
+        try:
+            tooltip_label.place_forget()
+        except Exception:
+            pass
+
+    def _on_row_enter(self, event, row):
+        """Handle mouse enter on result row"""
+        idx = row._index
+        if idx == self.selected:
+            return  # Don't change color if selected
+        if self._high_contrast:
+            row.configure(fg_color=HC_FG_DIM)
+        else:
+            row.configure(fg_color=BG_ITEM_HOVER)
+
+    def _on_row_leave(self, event, row):
         """Handle mouse leave on result row"""
-        if idx < len(self.result_rows):
-            is_selected = (idx == self.selected)
-            self.result_rows[idx].configure(fg_color=(BG_ITEM_HOVER if is_selected else "transparent"))
+        idx = row._index
+        if idx == self.selected:
+            return  # Don't change color if selected
+        if self._high_contrast:
+            row.configure(fg_color="transparent")
+        else:
+            row.configure(fg_color="transparent")
 
     def move_selection(self, delta):
         """Move selection up/down in results"""
@@ -523,8 +580,13 @@ class SpotlightApp:
             return
         self.selected = (self.selected + delta) % len(self.results)
         for i, row in enumerate(self.result_rows):
-            is_selected = (i == self.selected)
-            row.configure(fg_color=(BG_ITEM_HOVER if is_selected else "transparent"))
+            if i == self.selected:
+                if self._high_contrast:
+                    row.configure(fg_color=HC_ACCENT)
+                else:
+                    row.configure(fg_color=ACCENT)
+            else:
+                row.configure(fg_color="transparent")
 
     def launch_selected(self):
         """Launch the currently selected result"""
