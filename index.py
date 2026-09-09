@@ -248,3 +248,4 @@ class SystemIndex:
             ).start()
             # Small delay to avoid overwhelming system
             time.sleep(0.05)
+ 

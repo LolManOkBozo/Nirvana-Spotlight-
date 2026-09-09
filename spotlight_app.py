@@ -392,7 +392,7 @@ class SpotlightApp:
                 self.results_frame,
                 corner_radius=6 if LOW_END_MODE else 10,
                 fg_color="transparent",  # Will be set below based on selection and HC mode
-                height=44 if LOW_END_MODE else 52,
+                height=50 if LOW_END_MODE else 60,  # INCREASED: 44→48 (low-end), 52→56 (normal)
                 border_width=0
             )
             row.pack(fill="x", pady=1 if LOW_END_MODE else 2, padx=1 if LOW_END_MODE else 2)
@@ -524,7 +524,7 @@ class SpotlightApp:
             self.result_rows.append(row)
 
         # Adjust window height
-        height = 76 + (45 if LOW_END_MODE else 54) * len(self.results) + (10 if LOW_END_MODE else 10)
+        height = 76 + (49 if LOW_END_MODE else 58) * len(self.results) + (10 if LOW_END_MODE else 10)  # INCREASED: 45→49, 54→58
         self.root.geometry(f"{WINDOW_WIDTH}x{height}+{self.root.winfo_x()}+{self.root.winfo_y()}")
 
     def _launch_action(self, action):
