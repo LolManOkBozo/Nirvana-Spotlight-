@@ -102,7 +102,7 @@ class SpotlightApp:
         frame = ctk.CTkFrame(splash, corner_radius=16, fg_color=BG, border_width=1, border_color=BORDER_COLOR)
         frame.pack(fill="both", expand=True)
 
-        title = ctk.CTkLabel(frame, text="Winspot", font=("Segoe UI", 34, "bold"), text_color=FG)
+        title = ctk.CTkLabel(frame, text="Nirvana", font=("Segoe UI", 34, "bold"), text_color=FG)
         title.pack(expand=True, pady=(24, 0))
 
         subtitle = ctk.CTkLabel(frame, text="Initializing professional search interface...", font=("Segoe UI", 13), text_color=FG_DIM)

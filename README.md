@@ -1,4 +1,4 @@
-# Winspot
+# Nirvana
 
 Professional macOS Spotlight-inspired search tool for Windows — optimized for speed, accessibility, and daily use.
 
