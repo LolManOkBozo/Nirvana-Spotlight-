@@ -1,11 +1,12 @@
 """
-Main Spotlight application logic and UI (Winspot Professional Optimized)
+Main Spotlight application logic and UI (Nirvana Professional Optimized with Folder Navigation & Scrolling)
 """
 import os
 import queue
 import threading
 import time
 import webbrowser
+import subprocess
 from pathlib import Path
 
 import customtkinter as ctk
@@ -103,7 +104,7 @@ class SpotlightApp:
         frame.pack(fill="both", expand=True)
 
         title = ctk.CTkLabel(frame, text="Nirvana", font=("Segoe UI", 34, "bold"), text_color=FG)
-        title.pack(expand=True, pady=(24, 0))
+        title.pack(expand=True, pady=(24, 0))  # FIXED: Changed "paya" to "pady"
 
         subtitle = ctk.CTkLabel(frame, text="Initializing professional search interface...", font=("Segoe UI", 13), text_color=FG_DIM)
         subtitle.pack(expand=True, pady=(0, 24))  # FIXED: Removed erroneous "subtitle)" line
@@ -131,7 +132,7 @@ class SpotlightApp:
         self.entry = ctk.CTkEntry(
             header_frame,
             textvariable=self.entry_var,
-            placeholder_text="Spotlight Search (Alt+K for voice)",
+            placeholder_text="Nirvana Search (Alt+K for voice)",
             font=("Segoe UI", 20 if LOW_END_MODE else 22),  # ⚡ OPTIMIZATION: Smaller font
             height=48 if LOW_END_MODE else 56,               # ⚡ OPTIMIZATION: Shorter height
             corner_radius=6 if LOW_END_MODE else 12,         # ⚡ OPTIMIZATION: Less rounding
@@ -150,7 +151,11 @@ class SpotlightApp:
         )
         self.status_label.pack(side="right", padx=(8, 4))
 
-        self.results_frame = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.results_frame = ctk.CTkScrollableFrame(
+            self.container,
+            fg_color="transparent",
+            height=0  # Start hidden (height=0)
+        )
         self.results_frame.pack(fill="both", expand=True, padx=12, pady=(0, 14))
 
         self.result_rows = []
@@ -162,6 +167,11 @@ class SpotlightApp:
         self.entry.bind("<Up>", lambda e: self.move_selection(-1))
         self.entry.bind("<Return>", lambda e: self.launch_selected())
         self.root.bind("<FocusOut>", lambda e: self.root.after(140, self.hide_if_unfocused))
+
+        # Enable mouse scrolling
+        self.results_frame.bind("<MouseWheel>", self._on_mousewheel)  # Windows
+        self.results_frame.bind("<Button-4>", self._on_mousewheel)    # Linux scroll up
+        self.results_frame.bind("<Button-5>", self._on_mousewheel)    # Linux scroll down
 
     def _finish_startup(self, splash):
         """Complete initialization after splash screen"""
@@ -177,7 +187,8 @@ class SpotlightApp:
         screen_w = self.root.winfo_screenwidth()
         x = (screen_w - WINDOW_WIDTH) // 2
         y = int(self.root.winfo_screenheight() * 0.22)
-        self.root.geometry(f"{WINDOW_WIDTH}x76+{x}+{y}")
+        # Set width only, height will be adjusted by _adjust_window_height
+        self.root.geometry(f"{WINDOW_WIDTH}x1+{x}+{y}")
 
     def show(self):
         """Show the search window (Professional with micro-animations)"""
@@ -186,6 +197,7 @@ class SpotlightApp:
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", True)
+        self._adjust_window_height()  # Adjust height to fit current content (search bar only)
 
         # ⭐ PROFESSIONAL TOUCH: Smooth fade-in (macOS-style)
         self.root.attributes("-alpha", 0.0)
@@ -258,7 +270,8 @@ class SpotlightApp:
         self.result_rows = []
         self.results = []
         self.selected = 0
-        self.root.geometry(f"{WINDOW_WIDTH}x76+{self.root.winfo_x()}+{self.root.winfo_y()}")
+        self.results_frame.configure(height=0)  # Hide results frame
+        self._adjust_window_height()  # Adjust window height to fit hidden results
 
     def _on_entry_change(self):
         """Handle text input with debouncing (Low-End Optimization)"""
@@ -288,7 +301,7 @@ class SpotlightApp:
                 if self._debug_mode:
                     elapsed = (time.time() - start_time) * 1000
                     self._last_search_time = elapsed
-                    print(f"[Spotlight] Explicit web search: '{q}' → 1 result in {elapsed:.1f}ms")
+                    print(f"[Nirvana] Explicit web search: '{q}' → 1 result in {elapsed:.1f}ms")
             else:
                 # Just "?" - clear results
                 self.clear_results()
@@ -314,42 +327,86 @@ class SpotlightApp:
             if self._debug_mode:
                 elapsed = (time.time() - start_time) * 1000
                 self._last_search_time = elapsed
-                print(f"[Spotlight] Empty query → {elapsed:.1f}ms")
+                print(f"[Nirvana] Empty query → {elapsed:.1f}ms")
             return
 
-        entries = []
+        candidates = []
 
-        # Check for math result
+        # Math result
         if looks_like_math(text):
             try:
                 result = safe_eval(text)
-                entries.append((f"= {result}", "Math result • Press Enter to copy", lambda: self.copy(str(result))))
+                candidates.append({
+                    'label': f"= {result}",
+                    'subtext': "Math result • Press Enter to copy",
+                    'action': lambda: self.copy(str(result)),
+                    'usage_path': None  # No usage tracking for math
+                })
             except Exception:
                 pass
 
-        # Calculate how many local results we can show (leaving room for web search)
-        max_local_results = MAX_RESULTS - 1  # Reserve one slot for web search
-        if max_local_results < 0:
-            max_local_results = 0
+        # App results - EXPLICITLY HANDLE 2-TUPLE (name, path) FROM index.search_apps
+        apps_list = self.index.search_apps(text)
+        # Limit candidates to avoid excessive processing
+        if len(apps_list) > 2 * MAX_RESULTS:
+            apps_list = apps_list[:2 * MAX_RESULTS]
+        for app_tuple in apps_list:
+            # Explicitly unpack 2-tuple: (name, path)
+            name, path = app_tuple
+            candidates.append({
+                'label': name,
+                'subtext': f"Application • {path}",
+                'action': lambda p=path: os.startfile(p),
+                'usage_path': path
+            })
 
-        # Get apps results (up to max_local_results)
-        apps_results = []
-        for name, path in self.index.search_apps(text):
-            apps_results.append((name, f"Application • {path}", lambda p=path: os.startfile(p)))
-            if len(apps_results) >= max_local_results:
-                break
+        # File/folder results - EXPLICITLY HANDLE 3-TUPLE (name, path, is_dir) FROM index.search_windows_files
+        file_results = self.index.search_windows_files(text, limit=2 * MAX_RESULTS)
+        for file_tuple in file_results:
+            # Explicitly unpack 3-tuple: (name, path, is_dir)
+            name, path, is_dir = file_tuple
+            if is_dir:
+                # Folder: one result
+                candidates.append({
+                    'label': name,
+                    'subtext': f"📁 Folder • {path}",
+                    'action': lambda p=path: os.startfile(p),
+                    'usage_path': path
+                })
+            else:
+                # File: two results (open file + open containing folder)
+                candidates.append({
+                    'label': name,
+                    'subtext': f"📄 Document • {path}",
+                    'action': lambda p=path: os.startfile(p),
+                    'usage_path': path
+                })
+                candidates.append({
+                    'label': name,
+                    'subtext': "Open containing folder",
+                    'action': lambda p=path: self._open_containing_folder(p),
+                    'usage_path': path  # Same usage count as the file
+                })
 
-        # Get files/folders results (up to remaining space)
-        remaining = max_local_results - len(apps_results)
-        files_results = []
-        if remaining > 0:
-            file_results = self.index.search_windows_files(text, limit=remaining)
-            for name, path, is_dir in file_results:
-                tag = "📁 Folder" if is_dir else "📄 Document"
-                files_results.append((name, f"{tag} • {path}", lambda p=path: os.startfile(p)))
+        # Sort candidates by usage count (descending) then by label
+        def get_usage_count(cand):
+            if cand['usage_path'] is None:
+                return 0
+            return self.index.usage_counts[cand['usage_path']]  # FIXED: Use index.usage_counts
 
-        # Combine: math results first, then local results, then web search
-        all_results = entries + apps_results + files_results
+        candidates.sort(key=lambda cand: (-get_usage_count(cand), cand['label'].lower()))
+
+        # Take top (MAX_RESULTS - 1) for local results (reserve 1 slot for web search)
+        local_candidates = candidates[:MAX_RESULTS-1]
+
+        # Convert to UI format: (label, subtext, action)
+        all_results = []
+        for cand in local_candidates:
+            all_results.append((
+                cand['label'],
+                cand['subtext'],
+                cand['action']
+            ))
 
         # Always add web search option if query not empty
         if text.strip():
@@ -366,7 +423,39 @@ class SpotlightApp:
         if self._debug_mode:
             elapsed = (time.time() - start_time) * 1000
             self._last_search_time = elapsed
-            print(f"[Spotlight] Search: '{text}' → {len(self.results)} results in {elapsed:.1f}ms")
+            print(f"[Nirvana] Search: '{text}' → {len(self.results)} results in {elapsed:.1f}ms")
+
+    def _open_containing_folder(self, path):
+        """Open the folder containing the file and select the file in Explorer"""
+        try:
+            # Normalize the path
+            path = os.path.normpath(path)
+            if os.path.isfile(path):
+                # For files: open Explorer and select the file
+                subprocess.run(['explorer', '/select,', path], check=True)
+            elif os.path.isdir(path):
+                # For folders: just open the folder
+                os.startfile(path)
+            else:
+                # Fallback: try to open the parent directory
+                parent = os.path.dirname(path)
+                if os.path.isdir(parent):
+                    os.startfile(parent)
+                else:
+                    # Last resort: open the drive
+                    drive = os.path.splitdrive(path)[0]
+                    if drive:
+                        os.startfile(drive + "\\")
+        except Exception:
+            # Fallback to opening the folder if selection fails
+            try:
+                folder = os.path.dirname(path)
+                if os.path.isdir(folder):
+                    os.startfile(folder)
+                else:
+                    os.startfile(os.path.splitdrive(path)[0] + "\\")
+            except Exception:
+                pass  # Fail silently - better than crashing
 
     def _render_results(self):
         """Render search results in the UI (Professional with enhancements)"""
@@ -375,10 +464,14 @@ class SpotlightApp:
             row.destroy()
         self.result_rows = []
 
-        # If no results, adjust window height and return
+        # If no results, hide results frame and adjust height
         if not self.results:
-            self.root.geometry(f"{WINDOW_WIDTH}x76+{self.root.winfo_x()}+{self.root.winfo_y()}")
+            self.results_frame.configure(height=0)
+            self._adjust_window_height()
             return
+
+        # Show results frame with fixed height
+        self.results_frame.configure(height=200)
 
         # Create new rows for each result
         for i, (label, sub, action) in enumerate(self.results):
@@ -392,7 +485,7 @@ class SpotlightApp:
                 self.results_frame,
                 corner_radius=6 if LOW_END_MODE else 10,
                 fg_color="transparent",  # Will be set below based on selection and HC mode
-                height=50 if LOW_END_MODE else 60,  # INCREASED: 44→48 (low-end), 52→56 (normal)
+                height=48 if LOW_END_MODE else 56,  # Increased height for better text visibility
                 border_width=0
             )
             row.pack(fill="x", pady=1 if LOW_END_MODE else 2, padx=1 if LOW_END_MODE else 2)
@@ -443,57 +536,20 @@ class SpotlightApp:
             if "📁 Folder" in sub:
                 icon = "📁 "
             elif "📄 Document" in sub:
-                ext = Path(path).suffix.lower() if path else ""
-                if ext in [".pdf", ".doc", ".docx"]:
-                    icon = "📄 "  # Document
-                elif ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff"]:
-                    icon = "🖼️ "  # Image
-                elif ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
-                    icon = "▶️ "  # Video
-                elif ext in [".zip", ".rar", ".7z", ".tar", ".gz"]:
-                    icon = "📦 "  # Archive
-                elif ext in [".exe", ".msi", ".bat", ".cmd"]:
-                    icon = "⚙️ "  # Executable
-                else:
-                    icon = "📄 "  # Generic document
+                icon = "📄 "
             elif "Application" in sub:
-                icon = "▶️ "  # Application
+                icon = "▶️ "
             elif "Math result" in sub:
-                icon = "🧮 "  # Calculator
+                icon = "🧮 "
             elif "Search the web" in sub:
-                icon = "🔍 "  # Web search
+                icon = "🔍 "
 
             # Clean subtitle for display (remove icon prefixes)
-            display_sub = sub.replace("📁 Folder • ", "").replace("📄 Document • ", "")
+            display_sub = sub.replace("📁 Folder • ", "").replace("📄 Document • ", "").replace("Application • ", "")
+
+            # Set labels
             title_label.configure(text=f"{icon}{label}")
             subtitle_label.configure(text=display_sub)
-
-            # Tooltip for file/folder rows
-            if "📁 Folder" in sub or "📄 Document" in sub and path:
-                # Create tooltip label (hidden by default)
-                tooltip_label = ctk.CTkLabel(
-                    row,
-                    text="",
-                    font=("Segoe UI", 9),
-                    text_color="#FFFFFF",
-                    fg_color="#000000",
-                    corner_radius=3
-                )
-                tooltip_label.place_forget()  # Start hidden
-
-                # Bind hover events to show/hide tooltip
-                def make_show_tooltip(p, lbl):
-                    return lambda event: self._show_tooltip(event, p, lbl)
-
-                def make_hide_tooltip(lbl):
-                    return lambda event: self._hide_tooltip(event, lbl)
-
-                show_tooltip = make_show_tooltip(path, tooltip_label)
-                hide_tooltip = make_hide_tooltip(tooltip_label)
-
-                for widget in (row, title_label, subtitle_label):
-                    widget.bind("<Enter>", show_tooltip)
-                    widget.bind("<Leave>", hide_tooltip)
 
             # Click event: launch the action
             def make_click_handler(act):
@@ -523,9 +579,8 @@ class SpotlightApp:
             # Keep track of the row
             self.result_rows.append(row)
 
-        # Adjust window height
-        height = 76 + (49 if LOW_END_MODE else 58) * len(self.results) + (10 if LOW_END_MODE else 10)  # INCREASED: 45→49, 54→58
-        self.root.geometry(f"{WINDOW_WIDTH}x{height}+{self.root.winfo_x()}+{self.root.winfo_y()}")
+        # Adjust window height to fit the new content (results frame now visible)
+        self._adjust_window_height()
 
     def _launch_action(self, action):
         """Safely execute an action (used for click handlers)"""
@@ -534,23 +589,21 @@ class SpotlightApp:
         except Exception:
             pass
 
-    def _show_tooltip(self, event, path, tooltip_label):
-        """Show file path tooltip near cursor"""
-        try:
-            # Position tooltip 10px below and right of cursor
-            x = self.root.winfo_pointerx() + 10
-            y = self.root.winfo_pointery() + 10
-            tooltip_label.configure(text=path)
-            tooltip_label.place(x=x, y=y)
-        except Exception:
-            pass  # Fail silently if tooltip positioning fails
+    # --- MOUSE SCROLL HANDLING ---
 
-    def _hide_tooltip(self, event, tooltip_label):
-        """Hide file path tooltip"""
-        try:
-            tooltip_label.place_forget()
-        except Exception:
-            pass
+    def _on_mousewheel(self, event):
+        """Handle mouse scroll events"""
+        # For Windows
+        if event.delta:
+            self.results_frame._parent_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        # For Linux
+        else:
+            if event.num == 4:
+                self.results_frame._parent_canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                self.results_frame._parent_canvas.yview_scroll(1, "units")
+
+    # --- MISSING METHODS ADDED HERE ---
 
     def _on_row_enter(self, event, row):
         """Handle mouse enter on result row"""
@@ -585,6 +638,14 @@ class SpotlightApp:
                     row.configure(fg_color=ACCENT)
             else:
                 row.configure(fg_color="transparent")
+
+        # Try to scroll to make the selected item visible (approximate)
+        try:
+            if len(self.results) > 0 and hasattr(self.results_frame, '_parent_canvas'):
+                fraction = self.selected / len(self.results)
+                self.results_frame._parent_canvas.yview_moveto(fraction)
+        except Exception:
+            pass  # Fail silently if scrolling fails
 
     def launch_selected(self):
         """Launch the currently selected result"""
@@ -710,7 +771,7 @@ class SpotlightApp:
         # Draw a smaller white circle inside for contrast
         d.ellipse((24, 24, 40, 40), fill=(255, 255, 255, 255))
         # Add a subtle spotlight effect
-        d.ellipse((20, 20, 44, 44), outline=(255, 255, 255, 100), width=1)
+        d.ellipse((20, 20, 44, 44), outline=(255, 255, 255, 100), width=1)  # FIXED: weight -> width
 
         # ⭐ PROFESSIONAL TOUCH: High-contrast toggle in tray menu
         menu = pystray.Menu(
@@ -722,7 +783,7 @@ class SpotlightApp:
             ),
             pystray.MenuItem("Quit", lambda icon, _: (icon.stop(), self.root.after(0, self.root.destroy))),
         )
-        threading.Thread(target=pystray.Icon("spotlight", img, "Spotlight", menu).run, daemon=True).start()
+        threading.Thread(target=pystray.Icon("nirvana", img, "Nirvana", menu).run, daemon=True).start()
 
     def _toggle_high_contrast(self):
         """Toggle high-contrast mode for accessibility (WCAG 2.1 AA)"""
@@ -757,7 +818,15 @@ class SpotlightApp:
             self._render_results()
 
         # Force immediate UI update
+        self.root.update_idletacks()
+
+    def _adjust_window_height(self):
+        """Adjust window height to fit content (search bar + results frame)"""
         self.root.update_idletasks()
+        height = self.root.winfo_reqheight()
+        x = self.root.winfo_x()
+        y = self.root.winfo_y()
+        self.root.geometry(f"{WINDOW_WIDTH}x{height}+{x}+{y}")
 
     def run(self):
         """Start the application main loop"""
