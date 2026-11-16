@@ -1,12 +1,11 @@
 """
-System index for apps, files, and folders search (Optimized with WinRT, Cache & Usage Tracking)
+System index for apps, files, and folders search (Optimized with Cache, Scoring & Usage Tracking)
 """
 import os
 import re
 import sys
 import threading
 import time
-import webbrowser
 import sqlite3
 import json
 from pathlib import Path
@@ -30,40 +29,43 @@ from config import (
     CACHE_DIR,
     USAGE_FILE
 )
+from utils import matches_acronym
 
 
 class SystemIndex:
     def __init__(self):
         self.apps = []
-        self.refresh_apps()
+        self._last_usage_save = 0
+        self.cache_lock = threading.Lock()
 
-        # Initialize COM exactly once for the main thread
-        if pythoncom:
-            pythoncom.CoInitialize()
-
-        # Initialize cache database
+        # Initialize cache database with WAL mode for speed
         self._init_cache_db()
 
         # Initialize usage tracking
         self.usage_counts = defaultdict(int)
         self._load_usage_counts()
 
+        # Initial background scan of apps
+        self.refresh_apps()
+
         # Preload common searches in background (skip on low-end to save resources)
         if not LOW_END_MODE:
             threading.Thread(target=self._preload_common_searches, daemon=True).start()
 
     def _init_cache_db(self):
-        """Initialize SQLite cache database"""
+        """Initialize SQLite cache database with WAL mode for fast concurrent operations"""
         self.cache_db = sqlite3.connect(str(CACHE_DIR / "search_cache.db"), check_same_thread=False)
-        self.cache_db.execute("""
-            CREATE TABLE IF NOT EXISTS search_cache (
-                query TEXT PRIMARY KEY,
-                results TEXT,  -- JSON serialized
-                timestamp REAL
-            )
-        """)
-        self.cache_db.commit()
-        self.cache_lock = threading.Lock()
+        with self.cache_lock:
+            self.cache_db.execute("PRAGMA journal_mode=WAL;")
+            self.cache_db.execute("PRAGMA synchronous=NORMAL;")
+            self.cache_db.execute("""
+                CREATE TABLE IF NOT EXISTS search_cache (
+                    query TEXT PRIMARY KEY,
+                    results TEXT,  -- JSON serialized
+                    timestamp REAL
+                )
+            """)
+            self.cache_db.commit()
 
     def _load_usage_counts(self):
         """Load usage counts from JSON file"""
@@ -81,17 +83,18 @@ class SystemIndex:
             with open(USAGE_FILE, 'w') as f:
                 json.dump(dict(self.usage_counts), f)
         except Exception:
-            pass  # Fail silently - usage tracking is non-critical
+            pass
 
-    def _increment_usage(self, path: str):
-        """Increment usage count for a path and persist"""
+    def record_launch(self, path: str):
+        """Increment usage count when the user actually launches an item"""
+        if not path:
+            return
         self.usage_counts[path] += 1
         # Debounce saves to avoid excessive disk writes
-        if hasattr(self, '_last_usage_save'):
-            if time.time() - self._last_usage_save < 5:  # Save at most every 5 seconds
-                return
-        self._save_usage_counts()
-        self._last_usage_save = time.time()
+        now = time.time()
+        if now - self._last_usage_save > 3:
+            self._save_usage_counts()
+            self._last_usage_save = now
 
     def _get_from_cache(self, query: str):
         """Get results from cache if not expired"""
@@ -107,72 +110,100 @@ class SystemIndex:
                     if time.time() - timestamp < CACHE_EXPIRY_SECONDS:
                         return json.loads(results_json)
                     else:
-                        # Delete expired entry
                         self.cache_db.execute("DELETE FROM search_cache WHERE query = ?", (query,))
                         self.cache_db.commit()
         except Exception:
-            pass  # Fail silently - fall back to live search
+            pass
         return None
 
     def _save_to_cache(self, query: str, results):
         """Save results to cache with current timestamp"""
         try:
             with self.cache_lock:
-                # Remove expired entries first (simple cleanup)
                 self.cache_db.execute(
                     "DELETE FROM search_cache WHERE timestamp < ?",
                     (time.time() - CACHE_EXPIRY_SECONDS * 2,)
                 )
-                # Insert or replace
                 self.cache_db.execute(
                     "INSERT OR REPLACE INTO search_cache (query, results, timestamp) VALUES (?, ?, ?)",
                     (query, json.dumps(results), time.time())
                 )
                 self.cache_db.commit()
         except Exception:
-            pass  # Fail silently - cache is optional
+            pass
 
     def refresh_apps(self):
-        """Refresh the list of installed applications from Start Menu"""
+        """Refresh the list of installed applications from Start Menu and shortcuts"""
         found = {}
+
+        # Built-in Windows system utilities
+        builtin_tools = [
+            ("Calculator", "calc.exe"),
+            ("Notepad", "notepad.exe"),
+            ("Paint", "mspaint.exe"),
+            ("Task Manager", "taskmgr.exe"),
+            ("Control Panel", "control.exe"),
+            ("Settings", "ms-settings:"),
+            ("File Explorer", "explorer.exe"),
+            ("Snipping Tool", "snippingtool.exe"),
+            ("Registry Editor", "regedit.exe"),
+            ("Command Prompt", "cmd.exe"),
+            ("Windows PowerShell", "powershell.exe"),
+            ("Windows Terminal", "wt.exe"),
+        ]
+        for name, cmd in builtin_tools:
+            found[name.lower()] = (name, cmd)
+
         for base in SHORTCUT_DIRS:
             if not base.exists():
                 continue
-            for path in base.rglob("*.lnk"):
-                name = path.stem
-                found[name.lower()] = (name, str(path))
+            try:
+                for path in base.rglob("*.lnk"):
+                    name = path.stem
+                    if name.lower() not in found:
+                        found[name.lower()] = (name, str(path))
+            except Exception:
+                continue
         self.apps = list(found.values())
 
     def search_apps(self, query: str):
-        """Search for applications by name with usage-based prioritization"""
+        """Search for applications with acronym, prefix, and usage scoring"""
         q = query.lower().strip()
-        if len(q) < 2:
+        if not q:
             return []
 
-        starts, contains = [], []
+        scored = []
         for name, path in self.apps:
             low = name.lower()
-            if low.startswith(q):
-                starts.append((name, path))
+            score = 0
+            if low == q:
+                score = 160
+            elif low.startswith(q):
+                score = 110
+            elif any(part.startswith(q) for part in re.split(r"[\s\-_]+", low)):
+                score = 85
+            elif matches_acronym(q, name):
+                score = 75
             elif q in low:
-                contains.append((name, path))
+                score = 45
 
-        # Sort by usage count (descending) then by name
-        starts.sort(key=lambda x: (-self.usage_counts[x[1]], x[0].lower()))
-        contains.sort(key=lambda x: (-self.usage_counts[x[1]], x[0].lower()))
-        return starts + contains
+            if score > 0:
+                # Add usage weighting (up to +60 points for frequently launched apps)
+                score += min(self.usage_counts.get(path, 0) * 4, 60)
+                scored.append((score, name, path))
+
+        scored.sort(key=lambda item: (-item[0], item[1].lower()))
+        return [(name, path) for _, name, path in scored]
 
     def _cached_file_search(self, query: str):
-        """Cached Windows Search API call with WinRT fallback and usage tracking"""
-        # Check cache first
+        """Perform Windows search with caching and fallback"""
         cached = self._get_from_cache(query)
         if cached is not None:
             return cached
 
-        # If not in cache, perform search
         results = []
 
-        # Try WinRT first (faster, available on Win10+)
+        # Try WinRT first if available
         if WINRT_AVAILABLE:
             try:
                 query_str = f'"*{query}*"'
@@ -185,16 +216,18 @@ class SystemIndex:
                 for file in files:
                     name = file.Name
                     path = file.Path
-                    is_dir = False  # WinRT StorageFileQueryResult only returns files
-                    results.append((name, path, is_dir))
+                    results.append((name, path, False))
                     if len(results) >= MAX_RESULTS:
                         break
             except Exception:
-                pass  # Fall back to COM if WinRT fails
+                pass
 
-        # Fall back to COM if WinRT failed or unavailable
-        if not results and win32com.client and pythoncom:
+        # COM Windows Search fallback
+        if not results:
+            co_init = False
             try:
+                pythoncom.CoInitialize()
+                co_init = True
                 conn = win32com.client.Dispatch("ADODB.Connection")
                 conn.Open("Provider=Search.CollatorDSO;Extended Properties='Application=Windows';")
 
@@ -215,37 +248,36 @@ class SystemIndex:
                 rs.Close()
                 conn.Close()
             except Exception:
-                pass  # Fail silently - return empty results
+                pass
+            finally:
+                if co_init:
+                    try:
+                        pythoncom.CoUninitialize()
+                    except Exception:
+                        pass
 
-        # Save to cache and increment usage for each result path
         if results:
             self._save_to_cache(query, results)
-            for _, path, _ in results:
-                self._increment_usage(path)
 
         return results
 
     def search_windows_files(self, query: str, limit=MAX_RESULTS):
-        """Public interface for file search with caching and usage prioritization"""
+        """Public interface for file search with usage prioritization"""
         results = self._cached_file_search(query)
         if not results:
             return []
 
-        # Sort by usage count (descending) then by name
         results.sort(key=lambda x: (-self.usage_counts[x[1]], x[0].lower()))
         return results[:limit]
 
     def _preload_common_searches(self):
         """Preload common searches in background thread"""
-        common = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
-                  "k", "l", "m", "n", "o", "p", "q", "r", "s", "t",
-                  "u", "v", "w", "x", "y", "z", "doc", "pic", "vid"]
+        common = ["doc", "pdf", "txt", "code", "download"]
         for term in common:
-            # Run search in background (don't block UI)
-            threading.Thread(
-                target=lambda t=term: self._cached_file_search(t),
-                daemon=True
-            ).start()
-            # Small delay to avoid overwhelming system
-            time.sleep(0.05)
+            try:
+                self._cached_file_search(term)
+            except Exception:
+                pass
+            time.sleep(0.1)
+
  

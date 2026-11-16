@@ -1,12 +1,13 @@
 """
-Main Spotlight application logic and UI (Nirvana Professional Optimized with Folder Navigation & Scrolling)
+Main Spotlight application logic and UI (Nirvana Spotlight - Modernized & High-Efficiency)
 """
+import ctypes
 import os
 import queue
+import subprocess
 import threading
 import time
 import webbrowser
-import subprocess
 from pathlib import Path
 
 import customtkinter as ctk
@@ -23,721 +24,995 @@ except ImportError:
     pystray = None
 
 from config import (
+    THEMES,
+    detect_system_theme,
+    INITIAL_THEME,
     HOTKEY_TOGGLE_WINDOW,
     HOTKEY_TOGGLE_VOICE,
     WINDOW_WIDTH,
     MAX_RESULTS,
     HOTKEY_DEBOUNCE_MS,
-    BG,
-    BG_ITEM_HOVER,
-    FG,
-    FG_DIM,
-    ACCENT,
-    BORDER_COLOR,
-    STATUS_COLOR,
-    DEBUG_MODE,
-    LOW_END_MODE,
-    ANIMATION_DURATION,
-    HC_BG,
-    HC_FG,
-    HC_FG_DIM,
-    HC_ACCENT,
-    HC_MODE  # Initial HC state from config
+    DEBUG_MODE
 )
-from utils import safe_eval, looks_like_math
+from utils import (
+    safe_eval,
+    looks_like_math,
+    truncate_path,
+    is_url,
+    open_url,
+    is_terminal_command,
+    run_terminal_command,
+    get_system_command
+)
 from index import SystemIndex
+
+
+class MARGINS(ctypes.Structure):
+    _fields_ = [
+        ("cxLeftWidth", ctypes.c_int),
+        ("cxRightWidth", ctypes.c_int),
+        ("cyTopHeight", ctypes.c_int),
+        ("cyBottomHeight", ctypes.c_int),
+    ]
 
 
 class SpotlightApp:
     def __init__(self):
-        # Force Light Mode for the macOS feel (overriden by theme detection)
-        ctk.set_appearance_mode("light")
+        # Determine theme
+        self.theme_mode = "system"
+        self.current_theme = INITIAL_THEME
+        self.current_palette = THEMES[self.current_theme]
+
+        ctk.set_appearance_mode(self.current_palette["CTK_MODE"])
         ctk.set_default_color_theme("blue")
 
+        # Root Window Setup
         self.root = ctk.CTk()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 1.0)  # NO TRANSPARENCY (solid background)
-        self.root.configure(fg_color=BG)
+        self.root.attributes("-alpha", 1.0)
+        self.root.configure(fg_color=self.current_palette["BG"])
         self.root.withdraw()
 
-        # Initialize state
+        # State tracking
         self._debug_mode = DEBUG_MODE
         self._last_search_time = 0
-        self.dictation_bar_on = False  # Tracks local state of dictation bar (for status only)
-        self._focus_attempts = 0       # Track focus attempts to prevent infinite loops
-        self._just_shown = False       # Temporarily ignore focus loss during show
-        self._alt_space_pressed = False  # Track Alt+Space state for debouncing
-        self._alt_k_pressed = False    # Track Alt+K state for debouncing
-        self._hotkey_lock = threading.Lock()  # Prevent race conditions
-        self._high_contrast = HC_MODE  # Start with system HC state
+        self.dictation_bar_on = False
+        self._just_shown = False
+        self._alt_space_pressed = False
+        self._alt_k_pressed = False
+        self._hotkey_lock = threading.Lock()
 
-        # ⚡ OPTIMIZATION: Input debouncing state
+        # Debounce and search worker management
         self._search_timer = None
-        self._pending_search = ""
+        self._query_counter = 0
 
-        # Initialize components
+        # Data & Queue
         self.index = SystemIndex()
         self.action_queue = queue.Queue()
-
-        # Setup UI and start services
-        self._show_splash_screen()
-
-    def _show_splash_screen(self):
-        """Show initialization splash screen"""
-        splash = ctk.CTkToplevel(self.root)
-        splash.overrideredirect(True)
-        splash.attributes("-topmost", True)
-        splash.attributes("-alpha", 1.0)  # NO TRANSPARENCY
-        splash.configure(fg_color=BG)
-
-        # Center the Splash Screen
-        splash_w, splash_h = 450, 180
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
-        x = (screen_w - splash_w) // 2
-        y = (screen_h - splash_h) // 2
-        splash.geometry(f"{splash_w}x{splash_h}+{x}+{y}")
-
-        # UI for Splash
-        frame = ctk.CTkFrame(splash, corner_radius=16, fg_color=BG, border_width=1, border_color=BORDER_COLOR)
-        frame.pack(fill="both", expand=True)
-
-        title = ctk.CTkLabel(frame, text="Nirvana", font=("Segoe UI", 34, "bold"), text_color=FG)
-        title.pack(expand=True, pady=(24, 0))  # FIXED: Changed "paya" to "pady"
-
-        subtitle = ctk.CTkLabel(frame, text="Initializing professional search interface...", font=("Segoe UI", 13), text_color=FG_DIM)
-        subtitle.pack(expand=True, pady=(0, 24))  # FIXED: Removed erroneous "subtitle)" line
-
-        splash.update()
-
-        # Setup main UI while splash is showing
-        self._setup_main_ui()
-
-        # Destroy splash after 2 seconds and start background hooks
-        self.root.after(2000, lambda: self._finish_startup(splash))
-
-    def _setup_main_ui(self):
-        """Setup the main application UI (Professional)"""
-        self.container = ctk.CTkFrame(self.root, corner_radius=8 if LOW_END_MODE else 18, fg_color=BG, border_width=1, border_color=BORDER_COLOR)
-        self.container.pack(fill="both", expand=True, padx=2, pady=2)
-        self.container.pack_propagate(False)
-
-        header_frame = ctk.CTkFrame(self.container, fg_color="transparent")
-        header_frame.pack(fill="x", padx=18, pady=(14, 6))
-
-        self.entry_var = ctk.StringVar()
-        self.entry_var.trace_add("write", lambda *_: self._on_entry_change())  # ⚡ OPTIMIZATION: Use custom handler
-
-        self.entry = ctk.CTkEntry(
-            header_frame,
-            textvariable=self.entry_var,
-            placeholder_text="Nirvana Search (Alt+K for voice)",
-            font=("Segoe UI", 20 if LOW_END_MODE else 22),  # ⚡ OPTIMIZATION: Smaller font
-            height=48 if LOW_END_MODE else 56,               # ⚡ OPTIMIZATION: Shorter height
-            corner_radius=6 if LOW_END_MODE else 12,         # ⚡ OPTIMIZATION: Less rounding
-            fg_color="transparent",
-            border_width=0,
-            text_color=FG,
-            placeholder_text_color=FG_DIM,
-        )
-        self.entry.pack(side="left", fill="x", expand=True)
-
-        self.status_label = ctk.CTkLabel(
-            header_frame,
-            text="",
-            font=("Segoe UI", 10 if LOW_END_MODE else 12, "bold"),  # ⚡ OPTIMIZATION: Smaller status font
-            text_color=STATUS_COLOR
-        )
-        self.status_label.pack(side="right", padx=(8, 4))
-
-        self.results_frame = ctk.CTkScrollableFrame(
-            self.container,
-            fg_color="transparent",
-            height=0  # Start hidden (height=0)
-        )
-        self.results_frame.pack(fill="both", expand=True, padx=12, pady=(0, 14))
-
-        self.result_rows = []
         self.results = []
         self.selected = 0
 
-        self.entry.bind("<Escape>", lambda e: self.hide())
-        self.entry.bind("<Down>", lambda e: self.move_selection(1))
-        self.entry.bind("<Up>", lambda e: self.move_selection(-1))
-        self.entry.bind("<Return>", lambda e: self.launch_selected())
-        self.root.bind("<FocusOut>", lambda e: self.root.after(140, self.hide_if_unfocused))
+        # Features popup state & window
+        self.POPUP_HEIGHT = 112
+        self._popup_visible = False
+        self._popup_animating = False
+        self._features_popup_enabled = True
+        self.popup_chip_buttons = []
 
-        # Enable mouse scrolling
-        self.results_frame.bind("<MouseWheel>", self._on_mousewheel)  # Windows
-        self.results_frame.bind("<Button-4>", self._on_mousewheel)    # Linux scroll up
-        self.results_frame.bind("<Button-5>", self._on_mousewheel)    # Linux scroll down
+        # Setup UI
+        self._setup_main_ui()
+        self._setup_features_popup()
+        self._apply_native_window_styling()
 
-    def _finish_startup(self, splash):
-        """Complete initialization after splash screen"""
-        splash.destroy()
-        self.root.update_idletasks()
-        self._position_window()
+        # Start Services
         self._start_hotkey_listener()
         self._start_tray_icon()
         self._poll_action_queue()
 
+    def _apply_native_window_styling(self):
+        """Enable Windows 11 rounded corners and native borderless drop shadow"""
+        try:
+            self.root.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            if not hwnd:
+                hwnd = self.root.winfo_id()
+
+            # DWMWA_WINDOW_CORNER_PREFERENCE = 33, 2 = DWMWCP_ROUNDED
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 33, ctypes.byref(ctypes.c_int(2)), ctypes.sizeof(ctypes.c_int)
+            )
+
+            # Drop shadow for borderless window
+            margins = MARGINS(1, 1, 1, 1)
+            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+        except Exception:
+            pass
+
+    def _setup_features_popup(self):
+        """Setup floating features card positioned on top of search bar"""
+        p = self.current_palette
+        self.popup_window = ctk.CTkToplevel(self.root)
+        self.popup_window.overrideredirect(True)
+        self.popup_window.attributes("-topmost", True)
+        self.popup_window.attributes("-alpha", 0.0)
+        self.popup_window.configure(fg_color=p["BG"])
+        self.popup_window.withdraw()
+
+        # Prevent the popup from ever stealing keyboard focus from entry
+        try:
+            self.popup_window.update_idletasks()
+            hwnd = self.popup_window.winfo_id()
+            GWL_EXSTYLE = -20
+            WS_EX_NOACTIVATE = 0x08000000
+            old_style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, old_style | WS_EX_NOACTIVATE)
+
+            # Rounded corners & shadow for popup
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 33, ctypes.byref(ctypes.c_int(2)), ctypes.sizeof(ctypes.c_int)
+            )
+            margins = MARGINS(1, 1, 1, 1)
+            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(margins))
+        except Exception:
+            pass
+
+        # Outer card frame
+        self.popup_container = ctk.CTkFrame(
+            self.popup_window,
+            corner_radius=12,
+            fg_color=p["CARD_BG"],
+            border_width=1,
+            border_color=p["BORDER_COLOR"]
+        )
+        self.popup_container.pack(fill="both", expand=True, padx=2, pady=2)
+
+        # Header with Title and Close button
+        hdr_frame = ctk.CTkFrame(self.popup_container, fg_color="transparent")
+        hdr_frame.pack(fill="x", padx=12, pady=(7, 3))
+
+        self.popup_title = ctk.CTkLabel(
+            hdr_frame,
+            text="💡 Nirvana Features & Shortcuts",
+            font=("Segoe UI", 12, "bold"),
+            text_color=p["ACCENT"]
+        )
+        self.popup_title.pack(side="left")
+
+        self.popup_sub = ctk.CTkLabel(
+            hdr_frame,
+            text="— click any shortcut below to try:",
+            font=("Segoe UI", 11),
+            text_color=p["FG_DIM"]
+        )
+        self.popup_sub.pack(side="left", padx=6)
+
+        self.popup_close_btn = ctk.CTkButton(
+            hdr_frame,
+            text="✕",
+            font=("Segoe UI", 10, "bold"),
+            width=20,
+            height=20,
+            corner_radius=10,
+            fg_color="transparent",
+            hover_color=p["BG_ITEM_HOVER"],
+            text_color=p["FG_DIM"],
+            command=self.toggle_features_popup
+        )
+        self.popup_close_btn.pack(side="right")
+
+        # 2x3 Grid of feature buttons
+        grid_frame = ctk.CTkFrame(self.popup_container, fg_color="transparent")
+        grid_frame.pack(fill="both", expand=True, padx=8, pady=(2, 8))
+        grid_frame.grid_columnconfigure((0, 1, 2), weight=1)
+
+        features = [
+            ("🧮 Math Solver", "25 * 4"),
+            ("⚡ App Launcher", "vsc"),
+            ("💻 Terminal Run", "> ping 8.8.8.8"),
+            ("🔒 System Actions", "lock"),
+            ("🌐 Web / URL", "github.com"),
+            ("🎙️ Voice Dictation", "Alt+K")
+        ]
+
+        self.popup_chip_buttons = []
+        for idx, (label, example) in enumerate(features):
+            row_idx = idx // 3
+            col_idx = idx % 3
+
+            def make_cmd(ex=example):
+                if ex == "Alt+K":
+                    return self._trigger_voice_toggle
+                return lambda: self.set_query(ex)
+
+            btn = ctk.CTkButton(
+                grid_frame,
+                text=f"{label}: {example}",
+                font=("Segoe UI", 11),
+                height=26,
+                corner_radius=6,
+                fg_color=p["BADGE_BG"],
+                hover_color=p["BG_ITEM_HOVER"],
+                text_color=p["FG"],
+                command=make_cmd()
+            )
+            btn.grid(row=row_idx, column=col_idx, padx=3, pady=2, sticky="ew")
+            self.popup_chip_buttons.append(btn)
+
+    def _setup_main_ui(self):
+        """Construct the UI layout with reusable widget pools for max efficiency"""
+        p = self.current_palette
+
+        # Outer container frame
+        self.container = ctk.CTkFrame(
+            self.root,
+            corner_radius=14,
+            fg_color=p["BG"],
+            border_width=1,
+            border_color=p["BORDER_COLOR"]
+        )
+        self.container.pack(fill="both", expand=True, padx=2, pady=2)
+
+        # Header area: Search icon, Entry, Clear button, Status
+        self.header_frame = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.header_frame.pack(fill="x", padx=16, pady=(12, 10))
+
+        # Search icon
+        self.search_icon_label = ctk.CTkLabel(
+            self.header_frame,
+            text="⚡",
+            font=("Segoe UI Emoji", 18),
+            text_color=p["ACCENT"],
+            width=26
+        )
+        self.search_icon_label.pack(side="left", padx=(0, 6))
+
+        # Text input
+        self.entry_var = ctk.StringVar()
+        self.entry_var.trace_add("write", lambda *_: self._on_entry_change())
+
+        self.entry = ctk.CTkEntry(
+            self.header_frame,
+            textvariable=self.entry_var,
+            placeholder_text="Search apps, files, math, commands (>)...",
+            font=("Segoe UI", 16),
+            height=44,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=0,
+            text_color=p["FG"],
+            placeholder_text_color=p["FG_DIM"],
+        )
+        self.entry.pack(side="left", fill="x", expand=True)
+
+        # Clear button (hidden when entry is empty)
+        self.clear_btn = ctk.CTkButton(
+            self.header_frame,
+            text="✕",
+            font=("Segoe UI", 12, "bold"),
+            width=22,
+            height=22,
+            corner_radius=11,
+            fg_color=p["BADGE_BG"],
+            hover_color=p["BG_ITEM_HOVER"],
+            text_color=p["FG_DIM"],
+            command=self._clear_input
+        )
+
+        # Status label (for Voice Search and Clipboard notifications)
+        self.status_label = ctk.CTkLabel(
+            self.header_frame,
+            text="",
+            font=("Segoe UI", 11, "bold"),
+            text_color=p["STATUS_COLOR"]
+        )
+        self.status_label.pack(side="right", padx=(4, 2))
+
+        # Features & Tips Toggle button
+        self.tips_btn = ctk.CTkButton(
+            self.header_frame,
+            text="💡",
+            font=("Segoe UI Emoji", 13),
+            width=26,
+            height=26,
+            corner_radius=13,
+            fg_color="transparent",
+            hover_color=p["BG_ITEM_HOVER"],
+            text_color=p["ACCENT"],
+            command=self.toggle_features_popup
+        )
+        self.tips_btn.pack(side="right", padx=(2, 4))
+
+        # Divider between input and results
+        self.divider = ctk.CTkFrame(
+            self.container,
+            height=1,
+            fg_color=p["BORDER_COLOR"]
+        )
+
+        # Container for results (non-scrollable fixed pool)
+        self.results_frame = ctk.CTkFrame(
+            self.container,
+            fg_color="transparent"
+        )
+
+        # Pre-allocate pool of row widgets to eliminate widget destroy/create churn
+        self.result_rows = []
+        for i in range(MAX_RESULTS):
+            row = ctk.CTkFrame(
+                self.results_frame,
+                corner_radius=8,
+                fg_color="transparent",
+                height=50,
+                border_width=0
+            )
+            row.pack_propagate(False)
+
+            icon_lbl = ctk.CTkLabel(
+                row,
+                text="▶️",
+                font=("Segoe UI Emoji", 16),
+                width=34,
+                anchor="center"
+            )
+            icon_lbl.pack(side="left", padx=(10, 4), pady=6)
+
+            text_frame = ctk.CTkFrame(row, fg_color="transparent")
+            text_frame.pack(side="left", fill="both", expand=True, padx=4, pady=4)
+
+            title_lbl = ctk.CTkLabel(
+                text_frame,
+                text="",
+                font=("Segoe UI", 13, "bold"),
+                text_color=p["FG"],
+                anchor="w"
+            )
+            title_lbl.pack(side="top", fill="x")
+
+            sub_lbl = ctk.CTkLabel(
+                text_frame,
+                text="",
+                font=("Segoe UI", 11),
+                text_color=p["FG_DIM"],
+                anchor="w"
+            )
+            sub_lbl.pack(side="top", fill="x")
+
+            badge_lbl = ctk.CTkLabel(
+                row,
+                text="APP",
+                font=("Segoe UI", 9, "bold"),
+                corner_radius=4,
+                fg_color=p["BADGE_BG"],
+                text_color=p["BADGE_FG"],
+                width=44,
+                height=20
+            )
+            badge_lbl.pack(side="right", padx=(4, 10), pady=15)
+
+            key_lbl = ctk.CTkLabel(
+                row,
+                text="↵",
+                font=("Segoe UI", 11),
+                text_color=p["FG_DIM"],
+                width=16
+            )
+            key_lbl.pack(side="right", padx=(2, 2))
+
+            row._icon_lbl = icon_lbl
+            row._text_frame = text_frame
+            row._title_lbl = title_lbl
+            row._sub_lbl = sub_lbl
+            row._badge_lbl = badge_lbl
+            row._key_lbl = key_lbl
+            row._index = i
+
+            self.result_rows.append(row)
+
+        # Keyboard and Focus Bindings
+        self.entry.bind("<Escape>", lambda e: self.hide())
+        self.entry.bind("<Down>", lambda e: self.move_selection(1))
+        self.entry.bind("<Up>", lambda e: self.move_selection(-1))
+        self.entry.bind("<Return>", lambda e: self.launch_selected())
+        self.entry.bind("<F1>", lambda e: self.toggle_features_popup())
+        self.entry.bind("<Alt-f>", lambda e: self.toggle_features_popup())
+        self.root.bind("<FocusOut>", lambda e: self.root.after(140, self.hide_if_unfocused))
+
+        # Position window immediately
+        self._position_window()
+
+    def _clear_input(self):
+        """Clear search input box and refocus"""
+        self.entry_var.set("")
+        self.entry.focus_set()
+
     def _position_window(self):
-        """Position window at top-center of screen"""
+        """Center window at upper-third of screen and sync popup position"""
         screen_w = self.root.winfo_screenwidth()
         x = (screen_w - WINDOW_WIDTH) // 2
         y = int(self.root.winfo_screenheight() * 0.22)
-        # Set width only, height will be adjusted by _adjust_window_height
-        self.root.geometry(f"{WINDOW_WIDTH}x1+{x}+{y}")
+        self._adjust_window_height(x, y)
+        if hasattr(self, 'popup_window') and getattr(self, '_popup_visible', False):
+            target_y = max(10, y - self.POPUP_HEIGHT - 10)
+            self.popup_window.geometry(f"{WINDOW_WIDTH}x{self.POPUP_HEIGHT}+{x}+{target_y}")
+
+    def _adjust_window_height(self, x=None, y=None):
+        """Fit window height tightly to search bar + visible results"""
+        self.root.update_idletasks()
+        height = self.root.winfo_reqheight()
+        if x is None:
+            x = (self.root.winfo_screenwidth() - WINDOW_WIDTH) // 2
+        if y is None:
+            y = int(self.root.winfo_screenheight() * 0.22)
+        self.root.geometry(f"{WINDOW_WIDTH}x{height}+{x}+{y}")
+
+    def apply_theme(self, theme_name: str):
+        """Apply theme dynamically across all UI widgets"""
+        if theme_name == "system":
+            self.current_theme = detect_system_theme()
+            self.theme_mode = "system"
+        else:
+            self.current_theme = theme_name
+            self.theme_mode = theme_name
+
+        self.current_palette = THEMES.get(self.current_theme, THEMES["dark"])
+        p = self.current_palette
+
+        ctk.set_appearance_mode(p["CTK_MODE"])
+
+        self.root.configure(fg_color=p["BG"])
+        self.container.configure(fg_color=p["BG"], border_color=p["BORDER_COLOR"])
+        self.search_icon_label.configure(text_color=p["ACCENT"])
+        self.entry.configure(
+            text_color=p["FG"],
+            placeholder_text_color=p["FG_DIM"]
+        )
+        self.clear_btn.configure(
+            fg_color=p["BADGE_BG"],
+            hover_color=p["BG_ITEM_HOVER"],
+            text_color=p["FG_DIM"]
+        )
+        self.status_label.configure(text_color=p["STATUS_COLOR"])
+        self.divider.configure(fg_color=p["BORDER_COLOR"])
+
+        # Update popup theme
+        if hasattr(self, 'popup_container'):
+            self.popup_window.configure(fg_color=p["BG"])
+            self.popup_container.configure(fg_color=p["CARD_BG"], border_color=p["BORDER_COLOR"])
+            self.popup_title.configure(text_color=p["ACCENT"])
+            self.popup_sub.configure(text_color=p["FG_DIM"])
+            self.popup_close_btn.configure(hover_color=p["BG_ITEM_HOVER"], text_color=p["FG_DIM"])
+            self.tips_btn.configure(text_color=p["ACCENT"], hover_color=p["BG_ITEM_HOVER"])
+            for btn in self.popup_chip_buttons:
+                btn.configure(fg_color=p["BADGE_BG"], hover_color=p["BG_ITEM_HOVER"], text_color=p["FG"])
+
+        self._update_selection_visuals()
+        self._apply_native_window_styling()
 
     def show(self):
-        """Show the search window (Professional with micro-animations)"""
-        self.index.refresh_apps()
+        """Reveal Spotlight instantly without disk blocking"""
         self._position_window()
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", True)
-        self._adjust_window_height()  # Adjust height to fit current content (search bar only)
+        self._adjust_window_height()
 
-        # ⭐ PROFESSIONAL TOUCH: Smooth fade-in (macOS-style)
-        self.root.attributes("-alpha", 0.0)
-        self._fade_animation(0, 100, 120)  # 0% → 100% over 120ms
-
-        # Focus handling (optimized for low-end)
         self._just_shown = True
-        self._focus_attempts = 0
         self.entry.focus_force()
-        self.root.after(50, lambda: setattr(self, '_just_shown', False))  # Shorter delay
+        self.root.after(60, lambda: setattr(self, '_just_shown', False))
 
-    def _fade_animation(self, start, end, duration_ms):
-        """Hardware-accelerated fade animation (0% CPU impact)"""
-        steps = 10
-        step_time = duration_ms / (steps * 1000)
-        def step(current=start):
-            if current > end:
-                return
-            self.root.attributes("-alpha", current/100 * 1.0)  # Solid opacity
-            self.root.after(int(step_time), lambda: step(current + (end-start)/steps))
-        step()
+        # Show features popup on open if enabled and query is empty
+        if getattr(self, '_features_popup_enabled', True) and not self.entry_var.get().strip():
+            self._show_features_popup()
 
     def hide(self):
-        """Hide the search window (Professional with micro-animations)"""
-        # If already hidden, just reset state
-        if self.root.state() == 'withdrawn':
-            self._focus_attempts = 0
-            self._just_shown = False
+        """Hide the Spotlight search window and popup"""
+        if self.root.state() == "withdrawn":
             return
 
-        # Reset voice search state when window hidden (contextual)
         if self.dictation_bar_on:
             self.dictation_bar_on = False
             self.action_queue.put(("set_status", ""))
 
-        # ⭐ PROFESSIONAL TOUCH: Smooth fade-out
-        self._fade_animation(100, 0, 100)  # 100% → 0% over 100ms
-        self.root.after(100, self._finalize_hide)  # Hide after fade completes
-
-    def _finalize_hide(self):
-        """Complete the hide operation after fade-out"""
-        self.root.attributes("-alpha", 0.0)
+        self._hide_features_popup(immediate=True)
         self.root.withdraw()
-        self._focus_attempts = 0
         self._just_shown = False
 
     def hide_if_unfocused(self):
-        """Hide window if it loses focus (except during show)"""
+        """Hide window if user clicks outside (except during immediate popup)"""
         try:
-            # Ignore focus loss if we just showed the window
-            if self.root.focus_get() is None and not self._just_shown:
+            focus = self.root.focus_get()
+            if focus is None and not self._just_shown:
+                # Retain focus if clicked inside popup window
+                if hasattr(self, 'popup_window') and self.popup_window.winfo_ismapped():
+                    if self.popup_window.focus_get() is not None:
+                        return
                 self.hide()
         except KeyError:
             self.hide()
 
+    def _show_features_popup(self):
+        """Animate features popup smoothly popping up on top of the search bar"""
+        if getattr(self, '_popup_animating', False) or self.root.state() == "withdrawn":
+            return
+
+        self._popup_animating = True
+        self._popup_visible = True
+
+        screen_w = self.root.winfo_screenwidth()
+        x = (screen_w - WINDOW_WIDTH) // 2
+        root_y = self.root.winfo_y()
+        target_y = max(10, root_y - self.POPUP_HEIGHT - 10)
+        start_y = target_y + 16  # Animate upwards into place
+
+        self.popup_window.attributes("-alpha", 0.0)
+        self.popup_window.geometry(f"{WINDOW_WIDTH}x{self.POPUP_HEIGHT}+{x}+{start_y}")
+        self.popup_window.deiconify()
+        self.popup_window.lift()
+        self.popup_window.attributes("-topmost", True)
+
+        steps = 10
+        def step(i=1):
+            if not self._popup_visible or self.root.state() == "withdrawn":
+                self._popup_animating = False
+                return
+            progress = i / steps
+            eased = 1 - (1 - progress) ** 2  # Ease out quadratic
+            curr_y = int(start_y + (target_y - start_y) * eased)
+            try:
+                self.popup_window.attributes("-alpha", eased)
+                self.popup_window.geometry(f"{WINDOW_WIDTH}x{self.POPUP_HEIGHT}+{x}+{curr_y}")
+            except Exception:
+                pass
+            if i < steps:
+                self.root.after(12, lambda: step(i + 1))
+            else:
+                try:
+                    self.popup_window.attributes("-alpha", 1.0)
+                    self.popup_window.geometry(f"{WINDOW_WIDTH}x{self.POPUP_HEIGHT}+{x}+{target_y}")
+                except Exception:
+                    pass
+                self._popup_animating = False
+        step()
+
+    def _hide_features_popup(self, immediate=False):
+        """Hide the features popup with smooth fade-out or immediately"""
+        self._popup_visible = False
+        if immediate or not hasattr(self, 'popup_window') or not self.popup_window.winfo_ismapped():
+            if hasattr(self, 'popup_window'):
+                self.popup_window.withdraw()
+            self._popup_animating = False
+            return
+
+        self._popup_animating = True
+        steps = 6
+        def step(i=1):
+            progress = i / steps
+            alpha = max(0.0, 1.0 - progress)
+            try:
+                self.popup_window.attributes("-alpha", alpha)
+            except Exception:
+                pass
+            if i < steps and not self._popup_visible:
+                self.root.after(10, lambda: step(i + 1))
+            else:
+                if not self._popup_visible:
+                    try:
+                        self.popup_window.withdraw()
+                    except Exception:
+                        pass
+                self._popup_animating = False
+        step()
+
+    def toggle_features_popup(self):
+        """Toggle features popup on/off with animation"""
+        if self._popup_visible:
+            self._features_popup_enabled = False
+            self._hide_features_popup()
+        else:
+            self._features_popup_enabled = True
+            self._show_features_popup()
+
+    def set_query(self, query_text: str):
+        """Populate search bar with sample shortcut, hide popup, and execute search"""
+        self.entry_var.set(query_text)
+        self.entry.focus_set()
+        self.entry.icursor(len(query_text))
+        self._hide_features_popup()
+
+    def _trigger_voice_toggle(self):
+        """Toggle Windows voice dictation"""
+        if keyboard:
+            try:
+                keyboard.press_and_release("win+h")
+            except Exception:
+                pass
+        self.dictation_bar_on = not self.dictation_bar_on
+        if self.dictation_bar_on:
+            self.status_label.configure(text="🎙️ Listening... (Alt+K to stop)")
+        else:
+            self.status_label.configure(text="")
+
     def toggle(self):
-        """Toggle window visibility"""
-        is_visible = self.root.state() != "withdrawn" and self.root.winfo_viewable()
+        """Toggle window between visible and hidden"""
+        is_visible = (self.root.state() != "withdrawn" and self.root.winfo_viewable())
         if is_visible:
             self.hide()
         else:
             self.show()
 
-    # -- Search & Rendering ------------------------------------------------ #
+    # -- Non-blocking Search Engine --------------------------------------- #
 
     def clear_results(self):
-        """Clear all search results"""
-        for row in self.result_rows:
-            row.destroy()
-        self.result_rows = []
+        """Hide results and reset state"""
         self.results = []
         self.selected = 0
-        self.results_frame.configure(height=0)  # Hide results frame
-        self._adjust_window_height()  # Adjust window height to fit hidden results
+        for row in self.result_rows:
+            row.pack_forget()
+        self.divider.pack_forget()
+        self.results_frame.pack_forget()
+        self._adjust_window_height()
 
     def _on_entry_change(self):
-        """Handle text input with debouncing (Low-End Optimization)"""
-        # Cancel any pending search
+        """Handle keystrokes with quick debounce and background execution"""
         if self._search_timer:
             self.root.after_cancel(self._search_timer)
 
-        # Get current text
-        current_text = self.entry_var.get()
+        query = self.entry_var.get()
 
-        # Check for explicit web search prefix (?)
-        if current_text.startswith("?"):
-            q = current_text[1:].strip()
-            if q:
-                # Explicit web search: show ONLY web search results
-                self._search_timer = None
-                start_time = time.time()
-                self.clear_results()
-                self.results = [(
-                    f'Search the web for "{q}"',
-                    "Opens your browser",
-                    lambda: webbrowser.open(f"https://www.google.com/search?q={q}")
-                )]
-                self._render_results()
+        # Toggle clear button and features popup visibility
+        if query:
+            if not self.clear_btn.winfo_ismapped():
+                self.clear_btn.pack(side="right", padx=(4, 6))
+            if self._popup_visible:
+                self._hide_features_popup()
+        else:
+            if self.clear_btn.winfo_ismapped():
+                self.clear_btn.pack_forget()
+            if getattr(self, '_features_popup_enabled', True) and not self._popup_visible:
+                self._show_features_popup()
 
-                # Debug timing
-                if self._debug_mode:
-                    elapsed = (time.time() - start_time) * 1000
-                    self._last_search_time = elapsed
-                    print(f"[Nirvana] Explicit web search: '{q}' → 1 result in {elapsed:.1f}ms")
-            else:
-                # Just "?" - clear results
-                self.clear_results()
+        if not query.strip():
+            self.clear_results()
             return
 
-        # ⚡ OPTIMIZATION: Only search if meaningful change
-        if len(current_text) >= 2 or current_text == "":
-            self._pending_search = current_text
-            # Schedule search after debounce period
-            self._search_timer = self.root.after(HOTKEY_DEBOUNCE_MS, self._perform_search)
-        else:
-            # For very short queries, clear results immediately
-            self.clear_results()
+        self._search_timer = self.root.after(HOTKEY_DEBOUNCE_MS, self._perform_search)
 
     def _perform_search(self):
-        """Actually perform the search (called after debounce)"""
+        """Spawn background worker to evaluate query without stalling UI thread"""
         self._search_timer = None
-        start_time = time.time()
-        text = self._pending_search
-        self.clear_results()
+        self._query_counter += 1
+        query_id = self._query_counter
+        query = self.entry_var.get().strip()
 
-        if not text.strip():
-            if self._debug_mode:
-                elapsed = (time.time() - start_time) * 1000
-                self._last_search_time = elapsed
-                print(f"[Nirvana] Empty query → {elapsed:.1f}ms")
+        if not query:
+            self.clear_results()
             return
 
-        candidates = []
+        def search_worker(q: str, q_id: int):
+            start_time = time.time()
+            candidates = []
 
-        # Math result
-        if looks_like_math(text):
-            try:
-                result = safe_eval(text)
+            # 1. Math Evaluation
+            if looks_like_math(q):
+                try:
+                    val = safe_eval(q)
+                    candidates.append({
+                        'label': f"= {val}",
+                        'subtext': "Math result • Press Enter to copy to clipboard",
+                        'icon': "🧮",
+                        'badge': "MATH",
+                        'action': lambda: self.copy(str(val)),
+                        'usage_path': None
+                    })
+                    self.action_queue.put(("render_results", (q_id, candidates)))
+                    return
+                except Exception:
+                    pass
+
+            # 2. Terminal Run (> ping 8.8.8.8)
+            if is_terminal_command(q):
+                raw_cmd = q.lstrip(">").strip()
+                if raw_cmd:
+                    candidates.append({
+                        'label': f"Run: {raw_cmd}",
+                        'subtext': "Executes command in Windows Command Prompt",
+                        'icon': "💻",
+                        'badge': "CMD",
+                        'action': lambda cmd=raw_cmd: run_terminal_command(cmd),
+                        'usage_path': None
+                    })
+                    self.action_queue.put(("render_results", (q_id, candidates)))
+                    return
+
+            # 3. Direct URL Navigation
+            if is_url(q):
                 candidates.append({
-                    'label': f"= {result}",
-                    'subtext': "Math result • Press Enter to copy",
-                    'action': lambda: self.copy(str(result)),
-                    'usage_path': None  # No usage tracking for math
+                    'label': f"Open URL: {q}",
+                    'subtext': "Navigates directly in your default browser",
+                    'icon': "🌐",
+                    'badge': "URL",
+                    'action': lambda u=q: open_url(u),
+                    'usage_path': None
                 })
+                self.action_queue.put(("render_results", (q_id, candidates)))
+                return
+
+            # 4. Explicit Web Search (? query)
+            if q.startswith("?"):
+                web_q = q.lstrip("?").strip()
+                if web_q:
+                    res = [{
+                        'label': f'Search Google for "{web_q}"',
+                        'subtext': "Opens search in default browser",
+                        'icon': "🔍",
+                        'badge': "WEB",
+                        'action': lambda: webbrowser.open(f"https://www.google.com/search?q={web_q}"),
+                        'usage_path': None
+                    }]
+                    self.action_queue.put(("render_results", (q_id, res)))
+                    return
+
+            # 5. System Commands (Lock, Sleep, Restart, Shutdown, Empty Trash)
+            sys_cmd = get_system_command(q)
+            if sys_cmd:
+                candidates.append({
+                    'label': sys_cmd['label'],
+                    'subtext': sys_cmd['subtext'],
+                    'icon': sys_cmd['icon'],
+                    'badge': sys_cmd['badge'],
+                    'action': sys_cmd['action'],
+                    'usage_path': None
+                })
+
+            # 6. Installed Applications Search
+            try:
+                apps = self.index.search_apps(q)
+                for name, path in apps[:MAX_RESULTS]:
+                    display_sub = truncate_path(path)
+                    candidates.append({
+                        'label': name,
+                        'subtext': f"Application • {display_sub}",
+                        'icon': "▶️",
+                        'badge': "APP",
+                        'action': lambda p=path: self._launch_file(p),
+                        'usage_path': path
+                    })
             except Exception:
                 pass
 
-        # App results - EXPLICITLY HANDLE 2-TUPLE (name, path) FROM index.search_apps
-        apps_list = self.index.search_apps(text)
-        # Limit candidates to avoid excessive processing
-        if len(apps_list) > 2 * MAX_RESULTS:
-            apps_list = apps_list[:2 * MAX_RESULTS]
-        for app_tuple in apps_list:
-            # Explicitly unpack 2-tuple: (name, path)
-            name, path = app_tuple
-            candidates.append({
-                'label': name,
-                'subtext': f"Application • {path}",
-                'action': lambda p=path: os.startfile(p),
-                'usage_path': path
-            })
+            # 7. Indexed Files and Folders Search
+            if len(candidates) < MAX_RESULTS:
+                try:
+                    limit = MAX_RESULTS - len(candidates)
+                    file_results = self.index.search_windows_files(q, limit=limit)
+                    for name, path, is_dir in file_results:
+                        display_sub = truncate_path(path)
+                        if is_dir:
+                            candidates.append({
+                                'label': name,
+                                'subtext': f"Folder • {display_sub}",
+                                'icon': "📁",
+                                'badge': "DIR",
+                                'action': lambda p=path: self._launch_file(p),
+                                'usage_path': path
+                            })
+                        else:
+                            candidates.append({
+                                'label': name,
+                                'subtext': f"Document • {display_sub}",
+                                'icon': "📄",
+                                'badge': "FILE",
+                                'action': lambda p=path: self._launch_file(p),
+                                'usage_path': path
+                            })
+                except Exception:
+                    pass
 
-        # File/folder results - EXPLICITLY HANDLE 3-TUPLE (name, path, is_dir) FROM index.search_windows_files
-        file_results = self.index.search_windows_files(text, limit=2 * MAX_RESULTS)
-        for file_tuple in file_results:
-            # Explicitly unpack 3-tuple: (name, path, is_dir)
-            name, path, is_dir = file_tuple
-            if is_dir:
-                # Folder: one result
+            # 8. Web Search Option (appended when local search has slots)
+            if len(candidates) < MAX_RESULTS and not any(c['badge'] in ('MATH', 'SYS', 'CMD', 'URL') for c in candidates):
                 candidates.append({
-                    'label': name,
-                    'subtext': f"📁 Folder • {path}",
-                    'action': lambda p=path: os.startfile(p),
-                    'usage_path': path
-                })
-            else:
-                # File: two results (open file + open containing folder)
-                candidates.append({
-                    'label': name,
-                    'subtext': f"📄 Document • {path}",
-                    'action': lambda p=path: os.startfile(p),
-                    'usage_path': path
-                })
-                candidates.append({
-                    'label': name,
-                    'subtext': "Open containing folder",
-                    'action': lambda p=path: self._open_containing_folder(p),
-                    'usage_path': path  # Same usage count as the file
+                    'label': f'Search Google for "{q}"',
+                    'subtext': "Opens query in default browser",
+                    'icon': "🔍",
+                    'badge': "WEB",
+                    'action': lambda: webbrowser.open(f"https://www.google.com/search?q={q}"),
+                    'usage_path': None
                 })
 
-        # Sort candidates by usage count (descending) then by label
-        def get_usage_count(cand):
-            if cand['usage_path'] is None:
-                return 0
-            return self.index.usage_counts[cand['usage_path']]  # FIXED: Use index.usage_counts
+            if self._debug_mode:
+                elapsed = (time.time() - start_time) * 1000
+                print(f"[Nirvana] Search '{q}' -> {len(candidates)} results in {elapsed:.1f}ms")
 
-        candidates.sort(key=lambda cand: (-get_usage_count(cand), cand['label'].lower()))
+            self.action_queue.put(("render_results", (q_id, candidates[:MAX_RESULTS])))
 
-        # Take top (MAX_RESULTS - 1) for local results (reserve 1 slot for web search)
-        local_candidates = candidates[:MAX_RESULTS-1]
-
-        # Convert to UI format: (label, subtext, action)
-        all_results = []
-        for cand in local_candidates:
-            all_results.append((
-                cand['label'],
-                cand['subtext'],
-                cand['action']
-            ))
-
-        # Always add web search option if query not empty
-        if text.strip():
-            all_results.append((
-                f'Search the web for "{text}"',
-                "Opens your browser",
-                lambda: webbrowser.open(f"https://www.google.com/search?q={text}")
-            ))
-
-        self.results = all_results
-        self._render_results()
-
-        # Debug timing
-        if self._debug_mode:
-            elapsed = (time.time() - start_time) * 1000
-            self._last_search_time = elapsed
-            print(f"[Nirvana] Search: '{text}' → {len(self.results)} results in {elapsed:.1f}ms")
-
-    def _open_containing_folder(self, path):
-        """Open the folder containing the file and select the file in Explorer"""
-        try:
-            # Normalize the path
-            path = os.path.normpath(path)
-            if os.path.isfile(path):
-                # For files: open Explorer and select the file
-                subprocess.run(['explorer', '/select,', path], check=True)
-            elif os.path.isdir(path):
-                # For folders: just open the folder
-                os.startfile(path)
-            else:
-                # Fallback: try to open the parent directory
-                parent = os.path.dirname(path)
-                if os.path.isdir(parent):
-                    os.startfile(parent)
-                else:
-                    # Last resort: open the drive
-                    drive = os.path.splitdrive(path)[0]
-                    if drive:
-                        os.startfile(drive + "\\")
-        except Exception:
-            # Fallback to opening the folder if selection fails
-            try:
-                folder = os.path.dirname(path)
-                if os.path.isdir(folder):
-                    os.startfile(folder)
-                else:
-                    os.startfile(os.path.splitdrive(path)[0] + "\\")
-            except Exception:
-                pass  # Fail silently - better than crashing
+        threading.Thread(target=search_worker, args=(query, query_id), daemon=True).start()
 
     def _render_results(self):
-        """Render search results in the UI (Professional with enhancements)"""
-        # Destroy all existing result rows
-        for row in self.result_rows:
-            row.destroy()
-        self.result_rows = []
-
-        # If no results, hide results frame and adjust height
+        """Render results into pre-allocated row pool without widget recreation"""
         if not self.results:
-            self.results_frame.configure(height=0)
-            self._adjust_window_height()
+            self.clear_results()
             return
 
-        # Show results frame with fixed height
-        self.results_frame.configure(height=200)
+        # Ensure divider and results frame are packed
+        if not self.divider.winfo_ismapped():
+            self.divider.pack(fill="x", padx=14, pady=(0, 6))
+        if not self.results_frame.winfo_ismapped():
+            self.results_frame.pack(fill="x", padx=8, pady=(0, 8))
 
-        # Create new rows for each result
-        for i, (label, sub, action) in enumerate(self.results):
-            # Extract path from subtext for apps/files results (format: "Label • path")
-            path = ""
-            if " • " in sub:
-                path = sub.split(" • ", 1)[1]  # Get everything after first " • "
+        # Update rows
+        for i, item in enumerate(self.results):
+            row = self.result_rows[i]
 
-            # Create the row frame
-            row = ctk.CTkFrame(
-                self.results_frame,
-                corner_radius=6 if LOW_END_MODE else 10,
-                fg_color="transparent",  # Will be set below based on selection and HC mode
-                height=48 if LOW_END_MODE else 56,  # Increased height for better text visibility
-                border_width=0
-            )
-            row.pack(fill="x", pady=1 if LOW_END_MODE else 2, padx=1 if LOW_END_MODE else 2)
-            row.pack_propagate(False)
+            row._icon_lbl.configure(text=item['icon'])
+            row._title_lbl.configure(text=item['label'])
+            row._sub_lbl.configure(text=item['subtext'])
+            row._badge_lbl.configure(text=item['badge'])
 
-            # Store index in row for hover/selection state tracking
-            row._index = i
+            # Bind click handlers
+            def make_click_handler(idx=i):
+                return lambda event: self.launch(idx)
 
-            # Determine colors based on selection and HC mode
-            if self._high_contrast:
-                if i == self.selected:
-                    bg_color = HC_ACCENT
-                    text_color = HC_BG
-                else:
-                    bg_color = "transparent"
-                    text_color = HC_FG
-            else:
-                if i == self.selected:
-                    bg_color = ACCENT
-                    text_color = FG
-                else:
-                    bg_color = "transparent"
-                    text_color = FG
+            handler = make_click_handler(i)
+            row.bind("<Button-1>", handler)
+            row._icon_lbl.bind("<Button-1>", handler)
+            row._text_frame.bind("<Button-1>", handler)
+            row._title_lbl.bind("<Button-1>", handler)
+            row._sub_lbl.bind("<Button-1>", handler)
+            row._badge_lbl.bind("<Button-1>", handler)
+            row._key_lbl.bind("<Button-1>", handler)
 
-            # Set row background color
-            row.configure(fg_color=bg_color)
+            # Bind hover handlers
+            def make_hover(r=row, idx=i):
+                def enter(event):
+                    if idx != self.selected:
+                        r.configure(fg_color=self.current_palette["BG_ITEM_HOVER"])
+                def leave(event):
+                    if idx != self.selected:
+                        r.configure(fg_color="transparent")
+                return enter, leave
 
-            # Title label
-            title_label = ctk.CTkLabel(
-                row,
-                font=("Segoe UI", 13 if LOW_END_MODE else 14, "bold"),
-                text_color=text_color,
-                anchor="w"
-            )
-            title_label.pack(side="top", fill="x", padx=10 if LOW_END_MODE else 14, pady=(8 if LOW_END_MODE else 10, 0))
+            on_enter, on_leave = make_hover(row, i)
+            for widget in (row, row._icon_lbl, row._text_frame, row._title_lbl, row._sub_lbl, row._badge_lbl, row._key_lbl):
+                widget.bind("<Enter>", on_enter)
+                widget.bind("<Leave>", on_leave)
 
-            # Subtitle label
-            subtitle_label = ctk.CTkLabel(
-                row,
-                font=("Segoe UI", 11 if LOW_END_MODE else 12),
-                text_color=text_color,
-                anchor="w"
-            )
-            subtitle_label.pack(side="top", fill="x", padx=10 if LOW_END_MODE else 14)
+            if not row.winfo_ismapped():
+                row.pack(fill="x", padx=4, pady=2)
 
-            # Set text with semantic icons
-            icon = ""
-            if "📁 Folder" in sub:
-                icon = "📁 "
-            elif "📄 Document" in sub:
-                icon = "📄 "
-            elif "Application" in sub:
-                icon = "▶️ "
-            elif "Math result" in sub:
-                icon = "🧮 "
-            elif "Search the web" in sub:
-                icon = "🔍 "
+        # Unpack unused rows from pool
+        for i in range(len(self.results), MAX_RESULTS):
+            self.result_rows[i].pack_forget()
 
-            # Clean subtitle for display (remove icon prefixes)
-            display_sub = sub.replace("📁 Folder • ", "").replace("📄 Document • ", "").replace("Application • ", "")
-
-            # Set labels
-            title_label.configure(text=f"{icon}{label}")
-            subtitle_label.configure(text=display_sub)
-
-            # Click event: launch the action
-            def make_click_handler(act):
-                return lambda event: self._launch_action(act)
-
-            click_handler = make_click_handler(action)
-            row.bind("<Button-1>", click_handler)
-            title_label.bind("<Button-1>", click_handler)
-            subtitle_label.bind("<Button-1>", click_handler)
-
-            # Hover events: change background color if not selected
-            def make_enter_handler(r):
-                return lambda event: self._on_row_enter(event, r)
-
-            def make_leave_handler(r):
-                return lambda event: self._on_row_leave(event, r)
-
-            enter_handler = make_enter_handler(row)
-            leave_handler = make_leave_handler(row)
-            row.bind("<Enter>", enter_handler)
-            row.bind("<Leave>", leave_handler)
-            title_label.bind("<Enter>", enter_handler)
-            title_label.bind("<Leave>", leave_handler)
-            subtitle_label.bind("<Enter>", enter_handler)
-            subtitle_label.bind("<Leave>", leave_handler)
-
-            # Keep track of the row
-            self.result_rows.append(row)
-
-        # Adjust window height to fit the new content (results frame now visible)
+        self._update_selection_visuals()
         self._adjust_window_height()
 
-    def _launch_action(self, action):
-        """Safely execute an action (used for click handlers)"""
-        try:
-            action()
-        except Exception:
-            pass
+    def _update_selection_visuals(self):
+        """Update colors of selected and unselected rows with high-contrast text"""
+        p = self.current_palette
+        for i in range(len(self.results)):
+            row = self.result_rows[i]
+            if i == self.selected:
+                row.configure(fg_color=p["ACCENT"])
+                row._title_lbl.configure(text_color=p["ACCENT_FG"])
+                row._sub_lbl.configure(text_color=p["ACCENT_SUB"])
+                row._badge_lbl.configure(fg_color=p["ACCENT_BADGE"], text_color=p["ACCENT_FG"])
+                row._key_lbl.configure(text_color=p["ACCENT_FG"])
+            else:
+                row.configure(fg_color="transparent")
+                row._title_lbl.configure(text_color=p["FG"])
+                row._sub_lbl.configure(text_color=p["FG_DIM"])
+                row._badge_lbl.configure(fg_color=p["BADGE_BG"], text_color=p["BADGE_FG"])
+                row._key_lbl.configure(text_color=p["FG_DIM"])
 
-    # --- MOUSE SCROLL HANDLING ---
-
-    def _on_mousewheel(self, event):
-        """Handle mouse scroll events"""
-        # For Windows
-        if event.delta:
-            self.results_frame._parent_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        # For Linux
-        else:
-            if event.num == 4:
-                self.results_frame._parent_canvas.yview_scroll(-1, "units")
-            elif event.num == 5:
-                self.results_frame._parent_canvas.yview_scroll(1, "units")
-
-    # --- MISSING METHODS ADDED HERE ---
-
-    def _on_row_enter(self, event, row):
-        """Handle mouse enter on result row"""
-        idx = row._index
-        if idx == self.selected:
-            return  # Don't change color if selected
-        if self._high_contrast:
-            row.configure(fg_color=HC_FG_DIM)
-        else:
-            row.configure(fg_color=BG_ITEM_HOVER)
-
-    def _on_row_leave(self, event, row):
-        """Handle mouse leave on result row"""
-        idx = row._index
-        if idx == self.selected:
-            return  # Don't change color if selected
-        if self._high_contrast:
-            row.configure(fg_color="transparent")
-        else:
-            row.configure(fg_color="transparent")
-
-    def move_selection(self, delta):
-        """Move selection up/down in results"""
+    def move_selection(self, delta: int):
+        """Move active selection up or down"""
         if not self.results:
             return
         self.selected = (self.selected + delta) % len(self.results)
-        for i, row in enumerate(self.result_rows):
-            if i == self.selected:
-                if self._high_contrast:
-                    row.configure(fg_color=HC_ACCENT)
-                else:
-                    row.configure(fg_color=ACCENT)
-            else:
-                row.configure(fg_color="transparent")
-
-        # Try to scroll to make the selected item visible (approximate)
-        try:
-            if len(self.results) > 0 and hasattr(self.results_frame, '_parent_canvas'):
-                fraction = self.selected / len(self.results)
-                self.results_frame._parent_canvas.yview_moveto(fraction)
-        except Exception:
-            pass  # Fail silently if scrolling fails
+        self._update_selection_visuals()
 
     def launch_selected(self):
-        """Launch the currently selected result"""
+        """Launch the currently highlighted item"""
         if self.results:
             self.launch(self.selected)
         else:
             self.hide()
 
-    def launch(self, idx):
-        """Launch result at given index"""
-        try:
-            self.results[idx][2]()
-        except Exception:
-            pass
+    def launch(self, idx: int):
+        """Safely execute action and record usage"""
+        if 0 <= idx < len(self.results):
+            item = self.results[idx]
+            usage_path = item.get('usage_path')
+            if usage_path:
+                self.index.record_launch(usage_path)
+
+            action = item.get('action')
+            if action:
+                try:
+                    action()
+                except Exception:
+                    pass
+
         self.hide()
 
-    def copy(self, text):
-        """Copy text to clipboard with professional feedback"""
-        self.root.clipboard_clear()
-        self.root.clipboard.append(text)
+    def _launch_file(self, path: str):
+        """Launch an executable, document, or folder"""
+        try:
+            os.startfile(path)
+        except Exception:
+            try:
+                subprocess.Popen(f'explorer "{path}"', shell=True)
+            except Exception:
+                pass
 
-        # ⭐ PROFESSIONAL TOUCH: Transient confirmation (like macOS)
+    def copy(self, text: str):
+        """Copy text to clipboard with transient feedback"""
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update()
+        except Exception:
+            pass
+
         original_text = self.status_label.cget("text")
-        self.status_label.configure(text="✓ Copied!", text_color="#34C759")  # Green success
-        self.root.after(1500, lambda: self.status_label.configure(
+        self.status_label.configure(text="✓ Copied!", text_color="#34C759")
+        self.root.after(1400, lambda: self.status_label.configure(
             text=original_text,
-            text_color=STATUS_COLOR
+            text_color=self.current_palette["STATUS_COLOR"]
         ))
 
-    # -- PERFECT HOTKEY LOGIC (ALT+SPACE & ALT+K) -------------------------- #
+    # -- Global Hotkey Listeners ------------------------------------------ #
 
     def _start_hotkey_listener(self):
-        """Setup global hotkey listeners"""
+        """Setup Alt+Space and Alt+K hotkey listeners"""
         if keyboard is None:
             return
 
-        def on_hotkey_triggered_window():
-            """Handle Alt+Space: Toggle search window (only on key press)"""
-            def handle_toggle():
-                # Use lock to prevent race conditions
-                with self._hotkey_lock:
-                    # Only act if this is a fresh key press (not during hold)
-                    if not self._alt_space_pressed:
-                        self._alt_space_pressed = True
-                        is_visible = self.root.state() != "withdrawn" and self.root.winfo_viewable()
-                        if is_visible:
-                            self.action_queue.put(("hide", None))
-                        else:
-                            self.action_queue.put(("show", None))
-                        # Schedule reset after debounce period
-                        self.root.after(HOTKEY_DEBOUNCE_MS, lambda: setattr(self, '_alt_space_pressed', False))
-            threading.Thread(target=handle_toggle, daemon=True).start()
+        def on_toggle_window():
+            with self._hotkey_lock:
+                if not self._alt_space_pressed:
+                    self._alt_space_pressed = True
+                    self.action_queue.put(("toggle", None))
+                    self.root.after(HOTKEY_DEBOUNCE_MS, lambda: setattr(self, '_alt_space_pressed', False))
 
-        def on_hotkey_triggered_voice():
-            """Handle Alt+K: Toggle voice search via Windows Dictation (only on key press)"""
-            def handle_voice_toggle():
-                # Use lock to prevent race conditions
-                with self._hotkey_lock:
-                    # Only act if this is a fresh key press (not during hold)
-                    if not self._alt_k_pressed:
-                        self._alt_k_pressed = True
+        def on_toggle_voice():
+            with self._hotkey_lock:
+                if not self._alt_k_pressed:
+                    self._alt_k_pressed = True
+                    self.dictation_bar_on = not self.dictation_bar_on
 
-                        # Toggle local dictation state
-                        self.dictation_bar_on = not self.dictation_bar_on
+                    # Trigger Windows Dictation
+                    keyboard.press_and_release("win+h")
 
-                        # Send Win+H to toggle system dictation bar
-                        keyboard.press_and_release('win+h')
+                    if self.dictation_bar_on:
+                        self.action_queue.put(("set_status", "🎙️ Listening... (Alt+K to stop)"))
+                        self.action_queue.put(("show", None))
+                    else:
+                        self.action_queue.put(("set_status", ""))
 
-                        # Update status based on local state
-                        if self.dictation_bar_on:
-                            self.action_queue.put(("set_status", "🎙️ Listening... (Press Alt+K again to stop)"))
-                        else:
-                            self.action_queue.put(("set_status", ""))
+                    self.root.after(HOTKEY_DEBOUNCE_MS, lambda: setattr(self, '_alt_k_pressed', False))
 
-                        # Show window if voice search turned on and window hidden
-                        if self.dictation_bar_on and not (self.root.state() == "normal" and self.root.winfo_viewable()):
-                            self.action_queue.put(("show", None))
+        try:
+            keyboard.add_hotkey(HOTKEY_TOGGLE_WINDOW, on_toggle_window, suppress=True)
+            keyboard.add_hotkey(HOTKEY_TOGGLE_VOICE, on_toggle_voice, suppress=True)
+        except Exception:
+            pass
 
-                        # Schedule reset after debounce period
-                        self.root.after(HOTKEY_DEBOUNCE_MS, lambda: setattr(self, '_alt_k_pressed', False))
-            threading.Thread(target=handle_voice_toggle, daemon=True).start()
-
-        # Register hotkeys with suppression
-        keyboard.add_hotkey(HOTKEY_TOGGLE_WINDOW, on_hotkey_triggered_window, suppress=True)
-        keyboard.add_hotkey(HOTKEY_TOGGLE_VOICE, on_hotkey_triggered_voice, suppress=True)
+    # -- Action Queue Polling ---------------------------------------------- #
 
     def _poll_action_queue(self):
-        """Process actions from the background thread queue"""
+        """Process actions posted from worker threads"""
         try:
             while True:
                 action, payload = self.action_queue.get_nowait()
-                if action == "show":
+                if action == "render_results":
+                    q_id, candidates = payload
+                    if q_id == self._query_counter:
+                        self.results = candidates
+                        self.selected = 0
+                        self._render_results()
+                elif action == "show":
                     self.show()
                 elif action == "hide":
                     self.hide()
@@ -745,91 +1020,47 @@ class SpotlightApp:
                     self.toggle()
                 elif action == "set_status":
                     self.status_label.configure(text=payload)
-                elif action == "apply_voice_text":
-                    # Legacy support - not used in current implementation
-                    self.status_label.configure(text="")
-                    self.entry_var.set(payload)
-                    self.entry.icursor(len(payload))
+                elif action == "set_theme":
+                    self.apply_theme(payload)
+                elif action == "refresh_index":
+                    threading.Thread(target=self.index.refresh_apps, daemon=True).start()
         except queue.Empty:
             pass
-        # ⚡ OPTIMIZATION: Poll less frequently on low-end (50ms vs 40ms)
-        self.root.after(50 if LOW_END_MODE else 40, self._poll_action_queue)
+
+        self.root.after(30, self._poll_action_queue)
 
     # -- System Tray ------------------------------------------------------- #
 
     def _start_tray_icon(self):
-        """Create system tray icon with professional menu"""
+        """Create Windows system tray icon with modern menu"""
         if pystray is None:
             return
 
-        # Create a simple, professional tray icon
         img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
+        d.ellipse((6, 6, 58, 58), fill=(0, 122, 255, 255))
+        d.ellipse((22, 22, 42, 42), fill=(255, 255, 255, 255))
 
-        # Draw a simple circle with macOS blue
-        d.ellipse((8, 8, 56, 56), fill=(0, 122, 255, 255))
-        # Draw a smaller white circle inside for contrast
-        d.ellipse((24, 24, 40, 40), fill=(255, 255, 255, 255))
-        # Add a subtle spotlight effect
-        d.ellipse((20, 20, 44, 44), outline=(255, 255, 255, 100), width=1)  # FIXED: weight -> width
-
-        # ⭐ PROFESSIONAL TOUCH: High-contrast toggle in tray menu
         menu = pystray.Menu(
-            pystray.MenuItem("Show / Hide", lambda *_: self.action_queue.put(("toggle", None)), default=True),
+            pystray.MenuItem("Show / Hide (Alt+Space)", lambda *_: self.action_queue.put(("toggle", None)), default=True),
             pystray.MenuItem(
-                "High Contrast",
-                lambda *_: self._toggle_high_contrast(),
-                checked=lambda item: self._high_contrast
+                "Theme",
+                pystray.Menu(
+                    pystray.MenuItem("System Default", lambda *_: self.action_queue.put(("set_theme", "system")), checked=lambda _: self.theme_mode == "system"),
+                    pystray.MenuItem("Dark Mode", lambda *_: self.action_queue.put(("set_theme", "dark")), checked=lambda _: self.theme_mode == "dark"),
+                    pystray.MenuItem("Light Mode", lambda *_: self.action_queue.put(("set_theme", "light")), checked=lambda _: self.theme_mode == "light"),
+                    pystray.MenuItem("High Contrast", lambda *_: self.action_queue.put(("set_theme", "high_contrast")), checked=lambda _: self.theme_mode == "high_contrast"),
+                )
             ),
+            pystray.MenuItem("Refresh App Index", lambda *_: self.action_queue.put(("refresh_index", None))),
             pystray.MenuItem("Quit", lambda icon, _: (icon.stop(), self.root.after(0, self.root.destroy))),
         )
-        threading.Thread(target=pystray.Icon("nirvana", img, "Nirvana", menu).run, daemon=True).start()
 
-    def _toggle_high_contrast(self):
-        """Toggle high-contrast mode for accessibility (WCAG 2.1 AA)"""
-        self._high_contrast = not self._high_contrast
-
-        # Update colors for HC mode
-        if self._high_contrast:
-            # Apply HC colors to all UI elements
-            self.root.configure(fg_color=HC_BG)
-            self.entry.configure(
-                text_color=HC_FG,
-                fg_color=HC_BG,
-                placeholder_text_color=HC_FG
-            )
-            self.status_label.configure(text_color=HC_FG)
-
-            # Update all existing result rows
-            for row in self.result_rows:
-                row.configure(fg_color=HC_BG)
-                if hasattr(row, '_title_label'):
-                    row._title_label.configure(text_color=HC_FG)
-                if hasattr(row, '_subtitle_label'):
-                    row._subtitle_label.configure(text_color=HC_FG)
-                if hasattr(row, '_tooltip_label'):
-                    row._tooltip_label.configure(
-                        text_color=HC_FG,
-                        fg_color=HC_BG
-                    )
-        else:
-            # Restore normal colors (handled in _render_results via config)
-            # Force a full UI refresh to apply normal colors
-            self._render_results()
-
-        # Force immediate UI update
-        self.root.update_idletacks()
-
-    def _adjust_window_height(self):
-        """Adjust window height to fit content (search bar + results frame)"""
-        self.root.update_idletasks()
-        height = self.root.winfo_reqheight()
-        x = self.root.winfo_x()
-        y = self.root.winfo_y()
-        self.root.geometry(f"{WINDOW_WIDTH}x{height}+{x}+{y}")
+        threading.Thread(target=pystray.Icon("nirvana", img, "Nirvana Spotlight", menu).run, daemon=True).start()
 
     def run(self):
-        """Start the application main loop"""
+        """Start the application"""
+        self.show()
         self.root.mainloop()
 
 
